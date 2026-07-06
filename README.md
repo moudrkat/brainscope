@@ -4,9 +4,9 @@
 
 An OpenAI-compatible chat server over any Hugging Face causal LM that streams
 per-token, per-layer residual-stream activity to a live browser visualization —
-and lets you steer the model with activation vectors while it serves real
-traffic. No changes to your app: point its OpenAI `base_url` at brainscope and
-open the viz in a window next to it.
+No changes to your app: point its OpenAI `base_url` at brainscope and open
+the viz in a window next to it. Live activation steering is wired in as an
+early work-in-progress — see below.
 
 > Built at [Lifeheck](https://lifeheck.ai) while evaluating local models for a
 > Czech agentic assistant — thanks to the whole team for the playground. 💛
@@ -39,7 +39,7 @@ unrolled over time — one column per generated token, one row per layer, color
 = how loudly that layer works on that token relative to its own average.
 Hover for details, ● record exports a WebM, PNG saves a snapshot.
 
-## Steering
+## Steering (WIP)
 
 Extract a direction from contrast pairs (ActAdd/repeng style), load it, and
 drive it live with the slider in the header — activation addition on real
@@ -55,10 +55,11 @@ The slider adds `strength × direction` to the residual stream of the chosen
 layers on every forward pass — positive pushes toward the "positive" side of
 your pairs, negative away. Watch the spine change color as you drag.
 
-Honest note: the bundled extractor is the naive mean-difference — it nails
-strong directions (language switching works beautifully) but subtle styles
-need more pairs and better methods (PCA over diffs, per-layer vectors).
-Bring your own vectors: anything shaped `{"name": [hidden_size floats]}` loads.
+This part is a work in progress. The bundled extractor is the naive
+mean-difference — it nails strong directions (language switching works
+beautifully) but subtle styles need more pairs and better methods (PCA over
+diffs, per-layer vectors); proper extraction tooling is coming. Meanwhile,
+bring your own vectors: anything shaped `{"name": [hidden_size floats]}` loads.
 
 ## Will it work with my app?
 
