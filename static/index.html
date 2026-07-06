@@ -12,10 +12,12 @@
   #schema { width:96px; display:flex; flex-direction:column; text-align:center;
             font-size:10.5px; color:#64748b; }
   .sch.top, .sch.bot { padding:4px 0; line-height:1.35; color:#97a7bc; }
-  .sch.mid { flex:1; border:1px dashed #3d5a80; border-radius:4px; margin:4px 6px;
-             display:flex; flex-direction:column-reverse; justify-content:space-between;
-             padding:4px 0; position:relative; }
-  .sch.mid span { font-size:9.5px; color:#4a5c75; }
+  .sch.mid { flex:1; border:1px solid #3d5a80; border-radius:4px; margin:4px 6px;
+             position:relative; overflow:hidden; }
+  #spine { position:absolute; inset:0; width:100%; height:100%; }
+  #layermarks { position:absolute; inset:0; display:flex; flex-direction:column-reverse;
+                justify-content:space-between; padding:3px 0; pointer-events:none; }
+  #layermarks span { font-size:9.5px; color:#c7d2e0; text-shadow:0 0 3px #0d131c; }
   .sch.mid::before { content:"vrstvy"; position:absolute; left:-38px; top:50%;
                      transform:rotate(-90deg); color:#97a7bc; font-size:11px; letter-spacing:.1em; }
   #heatwrap { flex:1; min-width:0; }
@@ -60,7 +62,7 @@
   <div id="scene">
     <div id="schema">
       <div class="sch top">slovo<br>▲<br>lm_head</div>
-      <div class="sch mid" id="layercol"></div>
+      <div class="sch mid"><canvas id="spine"></canvas><div id="layermarks"></div></div>
       <div class="sch bot">embedding<br>▲<br>prompt</div>
     </div>
     <div id="heatwrap">
@@ -126,6 +128,7 @@ function connect() {
       if (!baseline) baseline = msg.norms.slice();
       else baseline = baseline.map((b, i) => b * 0.98 + msg.norms[i] * 0.02);
       cols.push(msg.norms);
+      drawSpine(msg.norms);
       textEl.scrollTop = textEl.scrollHeight;
       draw();
     } else if (msg.type === "done") {
@@ -139,7 +142,7 @@ connect();
 fetch("/info").then(r => r.json()).then(i => {
   document.getElementById("modelinfo").textContent =
     `${i.model} · ${i.params_b} mld. parametrů · ${i.n_layers} vrstev · hidden ${i.hidden_size} · slovník ${(i.vocab_size/1000).toFixed(0)}k`;
-  const col = document.getElementById("layercol");
+  const col = document.getElementById("layermarks");
   const marks = [1, Math.round(i.n_layers/4), Math.round(i.n_layers/2), Math.round(3*i.n_layers/4), i.n_layers];
   col.innerHTML = marks.map(n => `<span>${n}</span>`).join("");
 }).catch(() => {});
@@ -160,6 +163,20 @@ async function send() {
 }
 document.getElementById("send").onclick = send;
 msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+
+// live model spine: the schema itself lights up with the current token
+const spine = document.getElementById("spine");
+const spineCtx = spine.getContext("2d");
+function drawSpine(norms) {
+  const W = spine.width = spine.clientWidth * devicePixelRatio;
+  const H = spine.height = spine.clientHeight * devicePixelRatio;
+  const n = norms.length;
+  for (let l = 0; l < n; l++) {
+    const rel = norms[l] / (baseline[l] || 1);
+    spineCtx.fillStyle = color((rel - 0.7) / 0.9);
+    spineCtx.fillRect(0, H - (l + 1) * (H / n), W, H / n - 1);
+  }
+}
 
 // hover tooltip: token / layer / relative norm
 const tip = document.getElementById("tip");
