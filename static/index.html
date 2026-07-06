@@ -1,0 +1,82 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>brainscope</title>
+<style>
+  body { margin:0; background:#0d131c; color:#edf1f7; font:14px ui-monospace,Menlo,Consolas,monospace; }
+  header { padding:14px 20px 10px; display:flex; justify-content:space-between; align-items:baseline; }
+  h1 { margin:0; font-size:18px; letter-spacing:.02em; }
+  h1 span { color:#e8b45a; }
+  #status { color:#64748b; font-size:12px; }
+  #wrap { padding:0 20px 16px; }
+  canvas { width:100%; background:#101927; border:1px solid #223047; display:block; }
+  #text { margin-top:10px; padding:12px 14px; background:#101927; border:1px solid #223047;
+          min-height:64px; max-height:180px; overflow-y:auto; white-space:pre-wrap;
+          font-size:13px; line-height:1.5; color:#c7d2e0; }
+  #legend { margin-top:6px; color:#64748b; font-size:11.5px; }
+</style>
+<header>
+  <h1>brain<span>scope</span></h1>
+  <div id="status">čekám na spojení…</div>
+</header>
+<div id="wrap">
+  <canvas id="heat" height="360"></canvas>
+  <div id="text"></div>
+  <div id="legend">osa x = generované tokeny · osa y = vrstvy (dole první) · barva = norma reziduálního streamu (relativně po vrstvě)</div>
+</div>
+<script>
+const canvas = document.getElementById("heat");
+const ctx = canvas.getContext("2d");
+const textEl = document.getElementById("text");
+const statusEl = document.getElementById("status");
+
+let cols = [];        // per token: array of layer norms
+let baseline = null;  // per-layer running mean for relative coloring
+
+function color(t) {   // 0..1 -> dark blue -> green -> amber
+  const stops = [[16,25,39],[38,90,128],[61,189,125],[232,180,90]];
+  const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const i = Math.floor(x), f = x - i;
+  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
+  return `rgb(${a.map((v,k)=>Math.round(v+(b[k]-v)*f)).join(",")})`;
+}
+
+function draw() {
+  const W = canvas.width = canvas.clientWidth * devicePixelRatio;
+  const H = canvas.height;
+  if (!cols.length) return;
+  const nLayers = cols[0].length;
+  const cw = Math.max(2, Math.min(14, W / Math.max(60, cols.length)));
+  const ch = H / nLayers;
+  const start = Math.max(0, cols.length - Math.floor(W / cw));
+  for (let x = start; x < cols.length; x++) {
+    for (let l = 0; l < nLayers; l++) {
+      const rel = cols[x][l] / (baseline[l] || 1);   // relative to per-layer mean
+      ctx.fillStyle = color((rel - 0.7) / 0.9);
+      ctx.fillRect((x - start) * cw, H - (l + 1) * ch, cw - 0.5, ch - 0.5);
+    }
+  }
+}
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => statusEl.textContent = "připojeno — pošli něco appce";
+  ws.onclose = () => { statusEl.textContent = "odpojeno, zkouším znovu…"; setTimeout(connect, 1500); };
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === "start") {
+      cols = []; textEl.textContent = "";
+      statusEl.textContent = `generuji · ${msg.model} · prompt ${msg.prompt_tokens} tokenů`;
+    } else if (msg.type === "token") {
+      if (!baseline) baseline = msg.norms.slice();
+      else baseline = baseline.map((b, i) => b * 0.98 + msg.norms[i] * 0.02);
+      cols.push(msg.norms);
+      textEl.textContent += msg.text;
+      textEl.scrollTop = textEl.scrollHeight;
+      draw();
+    } else if (msg.type === "done") {
+      statusEl.textContent = `hotovo · ${msg.completion_tokens} tokenů`;
+    }
+  };
+}
+connect();
+</script>

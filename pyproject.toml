@@ -1,0 +1,6 @@
+[project]
+name = "brainscope"
+version = "0.1.0"
+description = "Watch your model think while your app talks to it"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn", "transformers", "torch", "accelerate"]

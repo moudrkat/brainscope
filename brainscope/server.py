@@ -1,0 +1,180 @@
+"""brainscope — watch your model think while your app talks to it.
+
+An OpenAI-compatible chat-completions server over any Hugging Face causal LM
+that streams per-token, per-layer residual-stream activity to a live browser
+visualization. Point your app's OpenAI base_url at it; open http://host:port/
+in a window next to your app.
+
+    python -m brainscope.server --model Qwen/Qwen2.5-0.5B-Instruct --port 8010
+
+Optional steering-direction projections: --directions dirs.json where the file
+maps {"name": [hidden_size floats], ...}; each generated token then also
+reports its per-layer cosine with every named direction (the hook for watching
+steering vectors work — and, later, for applying them).
+"""
+
+import argparse
+import asyncio
+import json
+import re
+import time
+import uuid
+from pathlib import Path
+
+import torch
+import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
+
+STATIC = Path(__file__).parent.parent / "static"
+
+app = FastAPI(title="brainscope")
+state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
+               "loop": None, "device": "cpu", "model_name": ""}
+
+TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def load_model(name: str, device: str | None) -> None:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
+    state["tokenizer"] = AutoTokenizer.from_pretrained(name)
+    state["model"] = AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype).to(dev).eval()
+    state["device"] = dev
+    state["model_name"] = name
+
+
+async def broadcast(payload: dict) -> None:
+    dead = []
+    for ws in state["clients"]:
+        try:
+            await ws.send_text(json.dumps(payload, ensure_ascii=False))
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        state["clients"].discard(ws)
+
+
+def _layer_signals(hidden_states, directions):
+    """Per-layer L2 norms (+ cosines with named directions) for the last token."""
+    norms, cos = [], {name: [] for name in directions}
+    for h in hidden_states[1:]:  # skip embedding layer
+        v = h[0, -1].float()
+        norms.append(float(v.norm()))
+        for name, d in directions.items():
+            cos[name].append(float(torch.nn.functional.cosine_similarity(v, d, dim=0)))
+    return norms, cos
+
+
+@torch.inference_mode()
+def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
+    """Token-by-token generation, calling notify(payload) per token."""
+    tok, model = state["tokenizer"], state["model"]
+    kwargs = {"tools": tools} if tools else {}
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
+    ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
+    past, generated = None, []
+    notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"]})
+
+    for step in range(max_new_tokens):
+        out = model(input_ids=ids if past is None else ids[:, -1:],
+                    past_key_values=past, output_hidden_states=True, use_cache=True)
+        past = out.past_key_values
+        logits = out.logits[0, -1]
+        if temperature and temperature > 0:
+            probs = torch.softmax(logits / temperature, dim=-1)
+            next_id = torch.multinomial(probs, 1)
+        else:
+            next_id = logits.argmax().reshape(1)
+        norms, cos = _layer_signals(out.hidden_states, state["directions"])
+        piece = tok.decode(next_id)
+        notify({"type": "token", "i": step, "text": piece, "norms": norms, "cos": cos})
+        generated.append(int(next_id))
+        ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
+        if int(next_id) == tok.eos_token_id:
+            break
+
+    text = tok.decode(generated, skip_special_tokens=False)
+    notify({"type": "done", "completion_tokens": len(generated)})
+    return text
+
+
+def to_openai_response(text: str, model: str) -> dict:
+    tool_calls = []
+    for m in TOOL_CALL_RE.finditer(text):
+        try:
+            call = json.loads(m.group(1))
+            tool_calls.append({
+                "id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
+                "function": {"name": call.get("name"),
+                             "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False)}})
+        except json.JSONDecodeError:
+            continue
+    content = TOOL_CALL_RE.sub("", text)
+    content = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
+    content = content.replace("<|im_end|>", "").strip()
+    message = {"role": "assistant", "content": content or None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return {"id": f"chatcmpl-{uuid.uuid4().hex[:12]}", "object": "chat.completion",
+            "created": int(time.time()), "model": model,
+            "choices": [{"index": 0, "message": message,
+                         "finish_reason": "tool_calls" if tool_calls else "stop"}]}
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(body: dict):
+    loop = asyncio.get_running_loop()
+
+    def notify(payload):
+        asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+
+    text = await asyncio.to_thread(
+        generate_with_signals, body["messages"], body.get("tools"),
+        int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0), notify)
+    return JSONResponse(to_openai_response(text, state["model_name"]))
+
+
+@app.get("/v1/models")
+async def models():
+    return {"object": "list", "data": [{"id": state["model_name"], "object": "model"}]}
+
+
+@app.get("/")
+async def index():
+    return FileResponse(STATIC / "index.html")
+
+
+@app.websocket("/ws")
+async def ws(websocket: WebSocket):
+    await websocket.accept()
+    state["clients"].add(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        state["clients"].discard(websocket)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--port", type=int, default=8010)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--device", default=None)
+    parser.add_argument("--directions", type=Path, default=None,
+                        help="JSON {name: [hidden_size floats]} to project layers onto")
+    args = parser.parse_args()
+
+    load_model(args.model, args.device)
+    if args.directions:
+        raw = json.loads(args.directions.read_text())
+        state["directions"] = {k: torch.tensor(v).float().to(state["device"])
+                               for k, v in raw.items()}
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()
