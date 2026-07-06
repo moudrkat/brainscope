@@ -48,27 +48,50 @@ unrolled over time - one column per generated token, one row per layer, color
 = how loudly that layer works on that token relative to its own average.
 Hover for details, ● record exports a WebM, PNG saves a snapshot.
 
-## Steering (WIP)
+## Steering
 
 Extract a direction from contrast pairs (ActAdd/repeng style), load it, and
-drive it live with the slider in the header - activation addition on real
-traffic:
+drive it live from the header - activation addition on real traffic. Two
+extractors ship with brainscope:
+
+- `brainscope.extract` - quick mean-difference at one layer you pick. Fine
+  for strong directions (language switching works beautifully).
+- `brainscope.hidden_directions` - the serious one: it reads the hidden
+  states of the *completion* tokens for a positive and a negative
+  continuation of the same prompt, takes the first principal component of
+  the per-pair differences at every layer, and scores each layer by how
+  cleanly the direction separates the two sides - so you learn *where* in
+  the model the behaviour lives instead of guessing:
 
 ```bash
-python -m brainscope.extract --model qwen3-4b \
-    --pairs examples/czech_pairs.jsonl --layer 18 --name czech
+python -m brainscope.hidden_directions --model qwen3-4b \
+    --pairs pairs.jsonl --name no-smalltalk --out dirs.json
+# prints a per-layer score table and the suggested steering layer range
 brainscope --model qwen3-4b --directions dirs.json
 ```
 
-The slider adds `strength × direction` to the residual stream of the chosen
-layers on every forward pass - positive pushes toward the "positive" side of
-your pairs, negative away. Watch the spine change color as you drag.
+`pairs.jsonl` lines look like `{"prompt": ..., "positive": ..., "negative":
+..., "system": ...}` - the same prompt with two continuations that differ in
+exactly the behaviour you want. Lesson from the field: clean templated
+contrast beats realistic-but-noisy pairs by a wide margin.
 
-This part is a work in progress. The bundled extractor is the naive
-mean-difference - it nails strong directions (language switching works
-beautifully) but subtle styles need more pairs and better methods (PCA over
-diffs, per-layer vectors); proper extraction tooling is coming. Meanwhile,
-bring your own vectors: anything shaped `{"name": [hidden_size floats]}` loads.
+In the viz header pick a direction, drag the strength slider and set the
+steered layer range (use the extractor's table); the spine changes color as
+you drag. Or script it:
+
+```bash
+curl -X POST localhost:8010/steer \
+    -d '{"name": "no-smalltalk", "strength": 8, "layer_from": 16, "layer_to": 18}'
+```
+
+The vector library is just `dirs.json` next to the server - and it is
+manageable over HTTP: `GET /directions`, `POST /directions` with `{"name",
+"vector"}` (any `[hidden_size floats]` loads, bring your own), `DELETE
+/directions/{name}`.
+
+Still early: extraction quality decides everything, over-steering degrades
+the model into repetition (sweep strengths, watch coherence, not just your
+target metric), and per-layer vectors are on the roadmap.
 
 ## Will it work with my app?
 

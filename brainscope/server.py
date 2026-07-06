@@ -253,6 +253,47 @@ async def directions():
     return {"directions": sorted(state["directions"]), "steer": state["steer"]}
 
 
+def _hidden_size() -> int:
+    cfg = state["model"].config
+    return getattr(cfg, "hidden_size", None) or cfg.text_config.hidden_size
+
+
+def _persist_directions() -> None:
+    """dirs.json is the vector library — keep it in sync with the live state."""
+    path = state.get("dirs_path")
+    if not path:
+        return
+    raw = {k: [round(float(x), 6) for x in v.tolist()]
+           for k, v in state["directions"].items()}
+    Path(path).write_text(json.dumps(raw))
+
+
+@app.post("/directions")
+async def add_direction(body: dict):
+    name, vector = body.get("name"), body.get("vector")
+    if not name or not isinstance(vector, list):
+        return JSONResponse({"error": "expected {name, vector: [floats]}"},
+                            status_code=400)
+    hidden = _hidden_size()
+    if len(vector) != hidden:
+        return JSONResponse({"error": f"vector must have {hidden} dims"},
+                            status_code=400)
+    state["directions"][name] = torch.tensor(vector).float().to(state["device"])
+    _persist_directions()
+    return {"directions": sorted(state["directions"])}
+
+
+@app.delete("/directions/{name}")
+async def delete_direction(name: str):
+    if name not in state["directions"]:
+        return JSONResponse({"error": "unknown direction"}, status_code=404)
+    del state["directions"][name]
+    if state["steer"] and state["steer"]["name"] == name:
+        apply_steering(None, 0, 0, -1)
+    _persist_directions()
+    return {"directions": sorted(state["directions"])}
+
+
 @app.post("/steer")
 async def steer(body: dict):
     return apply_steering(body.get("name"), float(body.get("strength") or 0),
@@ -292,9 +333,11 @@ def main() -> None:
     print(f"brainscope: loading {model_id} …")
     load_model(model_id, args.device, args.quantize)
     if args.directions:
-        raw = json.loads(args.directions.read_text())
-        state["directions"] = {k: torch.tensor(v).float().to(state["device"])
-                               for k, v in raw.items()}
+        state["dirs_path"] = args.directions
+        if args.directions.exists():
+            raw = json.loads(args.directions.read_text())
+            state["directions"] = {k: torch.tensor(v).float().to(state["device"])
+                                   for k, v in raw.items()}
     if not args.no_browser:
         import threading
         import webbrowser

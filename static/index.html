@@ -84,6 +84,8 @@
          font:12px var(--mono); padding:5px 8px; border-radius:4px; }
   #strength { accent-color:var(--accent); }
   #sval { color:var(--accent); font-weight:700; font-size:12px; min-width:30px; }
+  #lrange { width:56px; background:var(--panel); color:var(--ink); border:1px solid var(--line);
+            font:11px var(--mono); padding:4px 6px; border-radius:4px; text-align:center; }
 
   #tip { position:fixed; display:none; background:#18243a; border:1px solid var(--line2);
          border-radius:4px; padding:5px 9px; font-size:11.5px; pointer-events:none;
@@ -95,8 +97,9 @@
   <div id="controls">
     <span id="steerbox">
       <select id="dir"></select>
-      <input id="strength" type="range" min="-3" max="3" step="0.1" value="0">
+      <input id="strength" type="range" min="-15" max="15" step="0.5" value="0">
       <span id="sval">0.0</span>
+      <input id="lrange" title="steered layer range, e.g. 16-18" spellcheck="false">
     </span>
     <button id="rec" class="btn">● record</button>
     <button id="snap" class="btn">PNG</button>
@@ -291,17 +294,34 @@ async function initSteer() {
   if (!r || !r.directions.length) return;
   dirSel.innerHTML = r.directions.map(d => `<option>${d}</option>`).join("");
   steerbox.style.display = "flex";
-  if (r.steer) { dirSel.value = r.steer.name; strengthEl.value = r.steer.strength; svalEl.textContent = (+r.steer.strength).toFixed(1); }
+  if (r.steer) {
+    dirSel.value = r.steer.name;
+    strengthEl.value = r.steer.strength;
+    svalEl.textContent = (+r.steer.strength).toFixed(1);
+    if (r.steer.layers) lrangeEl.value = `${r.steer.layers[0]}-${r.steer.layers[1]}`;
+  }
 }
 let nLayersTotal = 36;
-fetch("/info").then(r => r.json()).then(i => { nLayersTotal = i.n_layers || 36; });
+const lrangeEl = document.getElementById("lrange");
+fetch("/info").then(r => r.json()).then(i => {
+  nLayersTotal = i.n_layers || 36;
+  if (!lrangeEl.value) lrangeEl.value =
+    `${Math.round(nLayersTotal / 3)}-${Math.round(2 * nLayersTotal / 3)}`;
+});
+function steeredLayers() {
+  const m = lrangeEl.value.match(/^\s*(\d+)\s*[-–]\s*(\d+)\s*$/);
+  if (!m) return [Math.round(nLayersTotal / 3), Math.round(2 * nLayersTotal / 3)];
+  return [+m[1], +m[2]];
+}
 async function pushSteer() {
   svalEl.textContent = (+strengthEl.value).toFixed(1);
+  const [from, to] = steeredLayers();
   await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value,
-      layer_from: Math.round(nLayersTotal / 3), layer_to: Math.round(2 * nLayersTotal / 3)})});
+      layer_from: from, layer_to: to})});
 }
 strengthEl.addEventListener("change", pushSteer);
 dirSel.addEventListener("change", pushSteer);
+lrangeEl.addEventListener("change", pushSteer);
 initSteer();
 </script>
