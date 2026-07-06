@@ -96,11 +96,12 @@ function connect() {
       cols = []; tokens = []; textEl.textContent = "";
       statusEl.textContent = `generuji · ${msg.model} · prompt ${msg.prompt_tokens} tokenů`;
     } else if (msg.type === "token") {
+      textEl.textContent += msg.text;
+      if (!msg.norms.length) { textEl.scrollTop = textEl.scrollHeight; return; }
       tokens.push(msg.text);
       if (!baseline) baseline = msg.norms.slice();
       else baseline = baseline.map((b, i) => b * 0.98 + msg.norms[i] * 0.02);
       cols.push(msg.norms);
-      textEl.textContent += msg.text;
       textEl.scrollTop = textEl.scrollHeight;
       draw();
     } else if (msg.type === "done") {
