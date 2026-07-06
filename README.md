@@ -20,3 +20,17 @@ Optional: `--directions dirs.json` (`{"name": [hidden_size floats]}`) adds
 per-layer cosine projections of every generated token onto named directions —
 watch a steering vector engage, layer by layer. (Applying vectors, not just
 watching them, is next.)
+
+## Steering (v0)
+
+Extract a direction from contrast pairs, load it, and drive it live with the
+slider in the viz header — activation addition on real traffic:
+
+```bash
+python -m brainscope.extract --model tiny --pairs examples/czech_pairs.jsonl --layer 12 --name czech
+python -m brainscope.server --model tiny --directions dirs.json
+```
+
+Built-ins worth knowing: chat box on the viz page (no app needed), ● záznam
+(WebM of the heatmap), PNG snapshot, hover for token/layer detail, model
+presets (`--model tiny|qwen3-4b|qwen3.5-9b|gemma-e4b`).
