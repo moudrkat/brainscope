@@ -238,6 +238,16 @@ async def models():
     return {"object": "list", "data": [{"id": state["model_name"], "object": "model"}]}
 
 
+@app.get("/info")
+async def info():
+    cfg = state["model"].config
+    return {"model": state["model_name"],
+            "n_layers": getattr(cfg, "num_hidden_layers", None),
+            "hidden_size": getattr(cfg, "hidden_size", None),
+            "vocab_size": getattr(cfg, "vocab_size", None),
+            "params_b": round(sum(p.numel() for p in state["model"].parameters()) / 1e9, 1)}
+
+
 @app.get("/directions")
 async def directions():
     return {"directions": sorted(state["directions"]), "steer": state["steer"]}
