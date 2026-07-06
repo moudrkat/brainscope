@@ -149,11 +149,22 @@ def _generate(messages, tools, max_new_tokens, temperature, notify):
     past, generated = None, []
     notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"]})
 
+    # compute lm_head only for the last position — full-prompt logits of a 20k
+    # prompt × 150k vocab would be ~7 GB (transformers materializes them all)
+    logits_kw = {}
+    import inspect
+    fwd_params = inspect.signature(model.forward).parameters
+    for kw in ("logits_to_keep", "num_logits_to_keep"):
+        if kw in fwd_params:
+            logits_kw = {kw: 1}
+            break
+
     for step in range(max_new_tokens):
         # hidden states only for DECODE steps — prefill hidden states of a 20k
         # prompt would eat gigabytes and we only visualize the answer
         out = model(input_ids=ids if past is None else ids[:, -1:],
-                    past_key_values=past, output_hidden_states=past is not None, use_cache=True)
+                    past_key_values=past, output_hidden_states=past is not None,
+                    use_cache=True, **logits_kw)
         past = out.past_key_values
         logits = out.logits[0, -1]
         if temperature and temperature > 0:
