@@ -13,6 +13,15 @@
           min-height:64px; max-height:180px; overflow-y:auto; white-space:pre-wrap;
           font-size:13px; line-height:1.5; color:#c7d2e0; }
   #legend { margin-top:6px; color:#64748b; font-size:11.5px; }
+  #chat { margin-top:10px; display:flex; gap:8px; }
+  #msg { flex:1; background:#101927; border:1px solid #223047; color:#edf1f7;
+         font:13px ui-monospace,Menlo,Consolas,monospace; padding:9px 12px; outline:none; }
+  #msg:focus { border-color:#3d5a80; }
+  #send { background:#3d5a80; color:#edf1f7; border:none; padding:9px 18px;
+          font:600 13px ui-monospace,Menlo,Consolas,monospace; cursor:pointer; }
+  #send:hover { background:#4a6b96; }
+  #tip { position:fixed; display:none; background:#1c2940; border:1px solid #3d5a80;
+         padding:4px 8px; font-size:11.5px; pointer-events:none; z-index:10; }
 </style>
 <header>
   <h1>brain<span>scope</span></h1>
@@ -21,8 +30,13 @@
 <div id="wrap">
   <canvas id="heat" height="360"></canvas>
   <div id="text"></div>
-  <div id="legend">osa x = generované tokeny · osa y = vrstvy (dole první) · barva = norma reziduálního streamu (relativně po vrstvě)</div>
+  <div id="chat">
+    <input id="msg" placeholder="…nebo napiš modelu přímo odsud (Enter)" autocomplete="off">
+    <button id="send">poslat</button>
+  </div>
+  <div id="legend">osa x = generované tokeny · osa y = vrstvy (dole první) · barva = norma reziduálního streamu (relativně po vrstvě) · najetím na heatmapu detail</div>
 </div>
+<div id="tip"></div>
 <script>
 const canvas = document.getElementById("heat");
 const ctx = canvas.getContext("2d");
@@ -64,9 +78,10 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
-      cols = []; textEl.textContent = "";
+      cols = []; tokens = []; textEl.textContent = "";
       statusEl.textContent = `generuji · ${msg.model} · prompt ${msg.prompt_tokens} tokenů`;
     } else if (msg.type === "token") {
+      tokens.push(msg.text);
       if (!baseline) baseline = msg.norms.slice();
       else baseline = baseline.map((b, i) => b * 0.98 + msg.norms[i] * 0.02);
       cols.push(msg.norms);
@@ -79,4 +94,41 @@ function connect() {
   };
 }
 connect();
+
+// built-in chat: try the brain without any app attached
+const msgEl = document.getElementById("msg");
+let tokens = [];
+async function send() {
+  const text = msgEl.value.trim();
+  if (!text) return;
+  msgEl.value = ""; msgEl.disabled = true;
+  try {
+    await fetch("/v1/chat/completions", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({messages: [{role: "user", content: text}], max_tokens: 512}),
+    });
+  } finally { msgEl.disabled = false; msgEl.focus(); }
+}
+document.getElementById("send").onclick = send;
+msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+
+// hover tooltip: token / layer / relative norm
+const tip = document.getElementById("tip");
+canvas.addEventListener("mousemove", (ev) => {
+  if (!cols.length) { tip.style.display = "none"; return; }
+  const rect = canvas.getBoundingClientRect();
+  const W = canvas.width, H = canvas.height;
+  const nLayers = cols[0].length;
+  const cw = Math.max(2, Math.min(14, W / Math.max(60, cols.length)));
+  const start = Math.max(0, cols.length - Math.floor(W / cw));
+  const x = start + Math.floor((ev.clientX - rect.left) * devicePixelRatio / cw);
+  const l = nLayers - 1 - Math.floor((ev.clientY - rect.top) * devicePixelRatio / (H / nLayers));
+  if (x < 0 || x >= cols.length || l < 0 || l >= nLayers) { tip.style.display = "none"; return; }
+  const rel = cols[x][l] / (baseline[l] || 1);
+  tip.textContent = `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · vrstva ${l} · ${rel.toFixed(2)}× průměr`;
+  tip.style.left = (ev.clientX + 14) + "px";
+  tip.style.top = (ev.clientY + 14) + "px";
+  tip.style.display = "block";
+});
+canvas.addEventListener("mouseleave", () => tip.style.display = "none");
 </script>
