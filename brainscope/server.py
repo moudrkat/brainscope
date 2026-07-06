@@ -15,6 +15,8 @@ steering vectors work — and, later, for applying them).
 
 import argparse
 import asyncio
+import gc
+import threading
 import json
 import re
 import time
@@ -124,9 +126,22 @@ def _layer_signals(hidden_states, directions):
     return norms, cos
 
 
+_GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel agents must queue
+
+
 @torch.inference_mode()
 def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
     """Token-by-token generation, calling notify(payload) per token."""
+    with _GEN_LOCK:
+        try:
+            return _generate(messages, tools, max_new_tokens, temperature, notify)
+        finally:
+            gc.collect()
+            if state["device"] == "cuda":
+                torch.cuda.empty_cache()
+
+
+def _generate(messages, tools, max_new_tokens, temperature, notify):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
@@ -135,8 +150,10 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
     notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"]})
 
     for step in range(max_new_tokens):
+        # hidden states only for DECODE steps — prefill hidden states of a 20k
+        # prompt would eat gigabytes and we only visualize the answer
         out = model(input_ids=ids if past is None else ids[:, -1:],
-                    past_key_values=past, output_hidden_states=True, use_cache=True)
+                    past_key_values=past, output_hidden_states=past is not None, use_cache=True)
         past = out.past_key_values
         logits = out.logits[0, -1]
         if temperature and temperature > 0:
@@ -144,9 +161,14 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
             next_id = torch.multinomial(probs, 1)
         else:
             next_id = logits.argmax().reshape(1)
-        norms, cos = _layer_signals(out.hidden_states, state["directions"])
-        piece = tok.decode(next_id)
-        notify({"type": "token", "i": step, "text": piece, "norms": norms, "cos": cos})
+        if out.hidden_states is not None:
+            norms, cos = _layer_signals(out.hidden_states, state["directions"])
+            piece = tok.decode(next_id)
+            notify({"type": "token", "i": step, "text": piece, "norms": norms, "cos": cos})
+        else:
+            piece = tok.decode(next_id)
+            notify({"type": "token", "i": step, "text": piece,
+                    "norms": [], "cos": {}})
         generated.append(int(next_id))
         ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
         if int(next_id) == tok.eos_token_id:
