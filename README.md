@@ -72,8 +72,7 @@ brainscope --model qwen3-4b --directions dirs.json
 
 `pairs.jsonl` lines look like `{"prompt": ..., "positive": ..., "negative":
 ..., "system": ...}` - the same prompt with two continuations that differ in
-exactly the behaviour you want. Lesson from the field: clean templated
-contrast beats realistic-but-noisy pairs by a wide margin.
+exactly the behaviour you want.
 
 In the viz header pick a direction, drag the strength slider and set the
 steered layer range (use the extractor's table); the spine changes color as
@@ -90,8 +89,11 @@ manageable over HTTP: `GET /directions`, `POST /directions` with `{"name",
 /directions/{name}`.
 
 Still early: extraction quality decides everything, over-steering degrades
-the model into repetition (sweep strengths, watch coherence, not just your
-target metric), and per-layer vectors are on the roadmap.
+the model into repetition, and per-layer vectors are on the roadmap. Before
+steering anything real, read [docs/steering.md](docs/steering.md) - a case
+study and the lessons we learned the hard way (what data works, which layers
+to steer, how over-steering fails, and why steering a shared server steers
+*everyone* on it).
 
 ## Will it work with my app?
 
