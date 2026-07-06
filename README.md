@@ -11,6 +11,8 @@ open the viz in a window next to it.
 > Built at [Lifeheck](https://lifeheck.ai) while evaluating local models for a
 > Czech agentic assistant — thanks to the whole team for the playground. 💛
 
+![brainscope demo](docs/demo.gif)
+
 ## Quickstart
 
 ```bash
