@@ -55,6 +55,11 @@ The slider adds `strength × direction` to the residual stream of the chosen
 layers on every forward pass — positive pushes toward the "positive" side of
 your pairs, negative away. Watch the spine change color as you drag.
 
+Honest note: the bundled extractor is the naive mean-difference — it nails
+strong directions (language switching works beautifully) but subtle styles
+need more pairs and better methods (PCA over diffs, per-layer vectors).
+Bring your own vectors: anything shaped `{"name": [hidden_size floats]}` loads.
+
 ## Will it work with my app?
 
 Works when your app:
