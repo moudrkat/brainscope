@@ -28,12 +28,14 @@ def extract(model_name: str, pairs: list[dict], layer: int, device: str | None) 
     model = AutoModelForCausalLM.from_pretrained(
         model_name, torch_dtype=torch.bfloat16 if dev == "cuda" else torch.float32).to(dev).eval()
 
-    def last_hidden(text: str) -> torch.Tensor:
+    def mean_hidden(text: str) -> torch.Tensor:
         ids = tok(text, return_tensors="pt").input_ids.to(dev)
         out = model(input_ids=ids, output_hidden_states=True)
-        return out.hidden_states[layer][0, -1].float()
+        # mean over ALL positions — style lives in the whole sequence, the last
+        # token alone mostly remembers "what came right before it"
+        return out.hidden_states[layer][0].float().mean(0)
 
-    diffs = [last_hidden(p["positive"]) - last_hidden(p["negative"]) for p in pairs]
+    diffs = [mean_hidden(p["positive"]) - mean_hidden(p["negative"]) for p in pairs]
     direction = torch.stack(diffs).mean(0)
     return direction / direction.norm()
 
