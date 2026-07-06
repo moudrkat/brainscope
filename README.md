@@ -10,6 +10,8 @@ viz in a window next to it.
 ```bash
 pip install -e .
 python -m brainscope.server --model Qwen/Qwen3-4B-Instruct-2507 --port 8010
+# bigger models on a 16 GB card:
+# python -m brainscope.server --model Qwen/Qwen3.5-9B --quantize 8bit
 # app  -> http://<host>:8010/v1  (chat completions incl. tool calls, hermes format)
 # eyes -> http://<host>:8010/
 ```

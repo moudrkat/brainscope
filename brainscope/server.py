@@ -32,16 +32,30 @@ app = FastAPI(title="brainscope")
 state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
                "loop": None, "device": "cpu", "model_name": ""}
 
-TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+# Tool-call output formats differ per model family; try each in order.
+TOOL_CALL_PATTERNS = [
+    re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S),          # qwen/hermes
+    re.compile(r"```tool_(?:call|code)\s*(\{.*?\})\s*```", re.S),         # gemma-style fenced
+    re.compile(r"^\s*(\{\s*\"name\".*?\"arguments\".*?\})\s*$", re.S),  # bare JSON fallback
+]
 
 
-def load_model(name: str, device: str | None) -> None:
+def load_model(name: str, device: str | None, quantize: str | None = None) -> None:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16 if dev == "cuda" else torch.float32
+    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32}
+    if quantize:  # fit bigger models on a 16 GB card at some quality cost
+        from transformers import BitsAndBytesConfig
+        kwargs["quantization_config"] = (
+            BitsAndBytesConfig(load_in_8bit=True) if quantize == "8bit"
+            else BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16))
+        kwargs["device_map"] = "auto"
     state["tokenizer"] = AutoTokenizer.from_pretrained(name)
-    state["model"] = AutoModelForCausalLM.from_pretrained(name, torch_dtype=dtype).to(dev).eval()
+    model = AutoModelForCausalLM.from_pretrained(name, **kwargs)
+    if not quantize:
+        model = model.to(dev)
+    state["model"] = model.eval()
     state["device"] = dev
     state["model_name"] = name
 
@@ -103,16 +117,23 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
 
 def to_openai_response(text: str, model: str) -> dict:
     tool_calls = []
-    for m in TOOL_CALL_RE.finditer(text):
-        try:
-            call = json.loads(m.group(1))
+    matched = None
+    for pattern in TOOL_CALL_PATTERNS:
+        for m in pattern.finditer(text):
+            try:
+                call = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            name = call.get("name") or call.get("tool_name")
+            args = call.get("arguments") or call.get("parameters") or {}
             tool_calls.append({
                 "id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
-                "function": {"name": call.get("name"),
-                             "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False)}})
-        except json.JSONDecodeError:
-            continue
-    content = TOOL_CALL_RE.sub("", text)
+                "function": {"name": name,
+                             "arguments": json.dumps(args, ensure_ascii=False)}})
+        if tool_calls:
+            matched = pattern
+            break
+    content = matched.sub("", text) if matched else text
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
     content = content.replace("<|im_end|>", "").strip()
     message = {"role": "assistant", "content": content or None}
@@ -166,9 +187,11 @@ def main() -> None:
     parser.add_argument("--device", default=None)
     parser.add_argument("--directions", type=Path, default=None,
                         help="JSON {name: [hidden_size floats]} to project layers onto")
+    parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
+                        help="bitsandbytes quantization to fit bigger models on 16 GB")
     args = parser.parse_args()
 
-    load_model(args.model, args.device)
+    load_model(args.model, args.device, args.quantize)
     if args.directions:
         raw = json.loads(args.directions.read_text())
         state["directions"] = {k: torch.tensor(v).float().to(state["device"])
