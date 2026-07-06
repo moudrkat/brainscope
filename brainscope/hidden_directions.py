@@ -35,12 +35,16 @@ def completion_hiddens(model, tok, device, system: str | None, prompt: str,
     messages = ([{"role": "system", "content": system}] if system else []) + [
         {"role": "user", "content": prompt}
     ]
-    prefix_ids = tok.apply_chat_template(
-        messages, add_generation_prompt=True, return_tensors="pt"
-    )
-    full_ids = tok.apply_chat_template(
-        messages + [{"role": "assistant", "content": completion}],
-        add_generation_prompt=False, return_tensors="pt",
+    def ids(msgs, add_gen):
+        out = tok.apply_chat_template(
+            msgs, add_generation_prompt=add_gen, return_tensors="pt"
+        )
+        # newer transformers return a BatchEncoding here, older a plain tensor
+        return out if torch.is_tensor(out) else out["input_ids"]
+
+    prefix_ids = ids(messages, True)
+    full_ids = ids(
+        messages + [{"role": "assistant", "content": completion}], False
     )
     n_prefix = prefix_ids.shape[1]
     out = model(input_ids=full_ids.to(device), output_hidden_states=True)
