@@ -293,10 +293,13 @@ async function initSteer() {
   steerbox.style.display = "flex";
   if (r.steer) { dirSel.value = r.steer.name; strengthEl.value = r.steer.strength; svalEl.textContent = (+r.steer.strength).toFixed(1); }
 }
+let nLayersTotal = 36;
+fetch("/info").then(r => r.json()).then(i => { nLayersTotal = i.n_layers || 36; });
 async function pushSteer() {
   svalEl.textContent = (+strengthEl.value).toFixed(1);
   await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value})});
+    body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value,
+      layer_from: Math.round(nLayersTotal / 3), layer_to: Math.round(2 * nLayersTotal / 3)})});
 }
 strengthEl.addEventListener("change", pushSteer);
 dirSel.addEventListener("change", pushSteer);
