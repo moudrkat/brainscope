@@ -62,7 +62,7 @@
           border:1px solid var(--line); border-radius:6px;
           min-height:60px; max-height:170px; overflow-y:auto; white-space:pre-wrap;
           font-size:13px; line-height:1.55; color:#c7d2e0; }
-  #text:empty::before { content:"…odpověď modelu se objeví tady"; color:var(--faint); }
+  #text:empty::before { content:"…the model's answer appears here"; color:var(--faint); }
 
   #chat { margin-top:12px; display:flex; gap:10px; }
   #msg { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--ink);
@@ -91,16 +91,16 @@
 </style>
 
 <header>
-  <div class="wordmark">brain<b>scope</b><small>živý řez jazykovým modelem</small></div>
+  <div class="wordmark">brain<b>scope</b><small>a live cross-section of a language model</small></div>
   <div id="controls">
     <span id="steerbox">
       <select id="dir"></select>
       <input id="strength" type="range" min="-3" max="3" step="0.1" value="0">
       <span id="sval">0.0</span>
     </span>
-    <button id="rec" class="btn">● nahrát</button>
+    <button id="rec" class="btn">● record</button>
     <button id="snap" class="btn">PNG</button>
-    <span id="status"><span id="dot"></span><span id="stxt">připojuji…</span></span>
+    <span id="status"><span id="dot"></span><span id="stxt">connecting…</span></span>
   </div>
 </header>
 
@@ -108,23 +108,23 @@
   <div id="modelinfo"></div>
   <div id="scene">
     <div id="schema">
-      <div class="sch top"><b>další slovo</b><span class="arrow">▲</span>lm_head</div>
+      <div class="sch top"><b>next word</b><span class="arrow">▲</span>lm_head</div>
       <div class="sch mid"><canvas id="spine"></canvas><div id="layermarks"></div></div>
       <div class="sch bot">embedding<span class="arrow">▲</span><b>prompt</b></div>
     </div>
     <div id="heatwrap">
       <div id="frame"><canvas id="heat"></canvas></div>
-      <div id="xaxis">tokeny odpovědi — čas běží doprava →</div>
+      <div id="xaxis">answer tokens — time runs right →</div>
     </div>
   </div>
   <div id="text"></div>
   <div id="chat">
-    <input id="msg" placeholder="napiš modelu — nebo nech psát svoji appku a jen se dívej" autocomplete="off">
-    <button id="send">poslat</button>
+    <input id="msg" placeholder="talk to the model — or let your app do the talking and just watch" autocomplete="off">
+    <button id="send">send</button>
   </div>
   <div id="legend">
-    každý sloupec = jeden token odpovědi · každý řádek = jedna vrstva (řez podle schématu vlevo) ·
-    <span class="sw"></span> jak hlasitě vrstva na tokenu pracuje proti svému průměru · najetím myší detail
+    each column = one answer token · each row = one layer (the cross-section on the left) ·
+    <span class="sw"></span> how loudly the layer works on that token vs its own average · hover for detail
   </div>
 </div>
 <div id="tip"></div>
@@ -181,14 +181,14 @@ function drawSpine(norms) {
 
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { stxt.textContent = "připraveno"; };
-  ws.onclose = () => { dot.classList.remove("live"); stxt.textContent = "odpojeno, zkouším…"; setTimeout(connect, 1500); };
+  ws.onopen = () => { stxt.textContent = "ready"; };
+  ws.onclose = () => { dot.classList.remove("live"); stxt.textContent = "disconnected, retrying…"; setTimeout(connect, 1500); };
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
       cols = []; tokens = []; textEl.textContent = "";
       dot.classList.add("live");
-      stxt.textContent = `generuji · prompt ${msg.prompt_tokens} tok`;
+      stxt.textContent = `generating · prompt ${msg.prompt_tokens} tok`;
     } else if (msg.type === "token") {
       textEl.textContent += msg.text;
       textEl.scrollTop = textEl.scrollHeight;
@@ -201,7 +201,7 @@ function connect() {
       draw();
     } else if (msg.type === "done") {
       dot.classList.remove("live");
-      stxt.textContent = `hotovo · ${msg.completion_tokens} tok`;
+      stxt.textContent = `done · ${msg.completion_tokens} tok`;
     }
   };
 }
@@ -210,7 +210,7 @@ connect();
 // model info + layer marks
 fetch("/info").then(r => r.json()).then(i => {
   document.getElementById("modelinfo").innerHTML =
-    `<b>${i.model}</b> · ${i.params_b} mld. parametrů · ${i.n_layers} vrstev · hidden ${i.hidden_size} · slovník ${(i.vocab_size/1000).toFixed(0)}k`;
+    `<b>${i.model}</b> · ${i.params_b} B params · ${i.n_layers} layers · hidden ${i.hidden_size} · vocab ${(i.vocab_size/1000).toFixed(0)}k`;
   const marks = [1, Math.round(i.n_layers/4), Math.round(i.n_layers/2), Math.round(3*i.n_layers/4), i.n_layers];
   document.getElementById("layermarks").innerHTML = marks.map(n => `<span>${n}</span>`).join("");
 }).catch(() => {});
@@ -244,7 +244,7 @@ canvas.addEventListener("mousemove", (ev) => {
   const l = nLayers - 1 - Math.floor((ev.clientY - rect.top) * devicePixelRatio / (H / nLayers));
   if (x < 0 || x >= cols.length || l < 0 || l >= nLayers) { tip.style.display = "none"; return; }
   const rel = cols[x][l] / (baseline[l] || 1);
-  tip.textContent = `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · vrstva ${l + 1} · ${rel.toFixed(2)}× průměr`;
+  tip.textContent = `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · layer ${l + 1} · ${rel.toFixed(2)}× avg`;
   tip.style.left = (ev.clientX + 14) + "px";
   tip.style.top = (ev.clientY + 14) + "px";
   tip.style.display = "block";
@@ -265,7 +265,7 @@ const recBtn = document.getElementById("rec");
 recBtn.onclick = () => {
   if (recorder) {
     recorder.stop(); recorder = null;
-    recBtn.classList.remove("on"); recBtn.textContent = "● nahrát";
+    recBtn.classList.remove("on"); recBtn.textContent = "● record";
     return;
   }
   chunks = [];
