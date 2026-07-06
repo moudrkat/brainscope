@@ -28,9 +28,19 @@ from fastapi.responses import FileResponse, JSONResponse
 
 STATIC = Path(__file__).parent.parent / "static"
 
+# friendly shortcuts -> HF ids (extend freely)
+PRESETS = {
+    "qwen3-4b": "Qwen/Qwen3-4B-Instruct-2507",
+    "qwen3-8b": "Qwen/Qwen3-8B",
+    "qwen3.5-9b": "Qwen/Qwen3.5-9B",
+    "gemma-e4b": "google/gemma-4-E4B-it",
+    "tiny": "Qwen/Qwen2.5-0.5B-Instruct",  # CPU-friendly demo
+}
+
 app = FastAPI(title="brainscope")
 state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
-               "loop": None, "device": "cpu", "model_name": ""}
+               "loop": None, "device": "cpu", "model_name": "",
+               "steer": None, "steer_handles": []}
 
 # Tool-call output formats differ per model family; try each in order.
 TOOL_CALL_PATTERNS = [
@@ -69,6 +79,38 @@ async def broadcast(payload: dict) -> None:
             dead.append(ws)
     for ws in dead:
         state["clients"].discard(ws)
+
+
+def _decoder_layers(model):
+    for attr in ("model", "transformer"):
+        core = getattr(model, attr, None)
+        if core is not None and hasattr(core, "layers"):
+            return core.layers
+    raise RuntimeError("cannot locate decoder layers on this architecture")
+
+
+def apply_steering(name: str | None, strength: float, layer_from: int, layer_to: int) -> dict:
+    """(Re)install activation-addition hooks: h += strength * direction."""
+    for h in state["steer_handles"]:
+        h.remove()
+    state["steer_handles"] = []
+    if not name or strength == 0:
+        state["steer"] = None
+        return {"active": False}
+    vec = state["directions"][name]
+
+    def hook(_module, _inp, out):
+        hidden = out[0] if isinstance(out, tuple) else out
+        hidden = hidden + strength * vec.to(hidden.dtype)
+        return (hidden, *out[1:]) if isinstance(out, tuple) else hidden
+
+    layers = _decoder_layers(state["model"])
+    layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
+    for i in range(max(0, layer_from), layer_to + 1):
+        state["steer_handles"].append(layers[i].register_forward_hook(hook))
+    state["steer"] = {"name": name, "strength": strength,
+                      "layers": [max(0, layer_from), layer_to]}
+    return {"active": True, **state["steer"]}
 
 
 def _layer_signals(hidden_states, directions):
@@ -163,6 +205,17 @@ async def models():
     return {"object": "list", "data": [{"id": state["model_name"], "object": "model"}]}
 
 
+@app.get("/directions")
+async def directions():
+    return {"directions": sorted(state["directions"]), "steer": state["steer"]}
+
+
+@app.post("/steer")
+async def steer(body: dict):
+    return apply_steering(body.get("name"), float(body.get("strength") or 0),
+                          int(body.get("layer_from", 0)), int(body.get("layer_to", -1)))
+
+
 @app.get("/")
 async def index():
     return FileResponse(STATIC / "index.html")
@@ -189,13 +242,21 @@ def main() -> None:
                         help="JSON {name: [hidden_size floats]} to project layers onto")
     parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
+    parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
 
-    load_model(args.model, args.device, args.quantize)
+    model_id = PRESETS.get(args.model, args.model)
+    print(f"brainscope: loading {model_id} …")
+    load_model(model_id, args.device, args.quantize)
     if args.directions:
         raw = json.loads(args.directions.read_text())
         state["directions"] = {k: torch.tensor(v).float().to(state["device"])
                                for k, v in raw.items()}
+    if not args.no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{args.port}/")).start()
+    print(f"brainscope: app endpoint http://0.0.0.0:{args.port}/v1 · viz http://localhost:{args.port}/")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 

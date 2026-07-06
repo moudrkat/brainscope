@@ -22,10 +22,25 @@
   #send:hover { background:#4a6b96; }
   #tip { position:fixed; display:none; background:#1c2940; border:1px solid #3d5a80;
          padding:4px 8px; font-size:11.5px; pointer-events:none; z-index:10; }
+  .btn { background:#162233; color:#97a7bc; border:1px solid #223047; padding:5px 10px;
+         font:600 12px ui-monospace,Menlo,Consolas,monospace; cursor:pointer; }
+  .btn:hover { color:#edf1f7; border-color:#3d5a80; }
+  .btn.on { color:#e5636b; border-color:#e5636b; }
+  #dir { background:#162233; color:#edf1f7; border:1px solid #223047; font:12px ui-monospace,monospace; padding:4px; }
+  #sval { color:#e8b45a; font-size:12px; min-width:28px; display:inline-block; }
 </style>
 <header>
   <h1>brain<span>scope</span></h1>
-  <div id="status">čekám na spojení…</div>
+  <div style="display:flex; gap:10px; align-items:center">
+    <span id="steerbox" style="display:none">
+      <select id="dir"></select>
+      <input id="strength" type="range" min="-3" max="3" step="0.1" value="0" style="vertical-align:middle">
+      <span id="sval">0.0</span>
+    </span>
+    <button id="rec" class="btn">● nahrát</button>
+    <button id="snap" class="btn">PNG</button>
+    <span id="status">čekám na spojení…</span>
+  </div>
 </header>
 <div id="wrap">
   <canvas id="heat" height="360"></canvas>
@@ -131,4 +146,55 @@ canvas.addEventListener("mousemove", (ev) => {
   tip.style.display = "block";
 });
 canvas.addEventListener("mouseleave", () => tip.style.display = "none");
+
+// PNG snapshot
+document.getElementById("snap").onclick = () => {
+  const a = document.createElement("a");
+  a.download = `brainscope-${Date.now()}.png`;
+  a.href = canvas.toDataURL("image/png");
+  a.click();
+};
+
+// WebM recording of the heatmap (canvas capture) — LinkedIn video maker
+let recorder = null, chunks = [];
+const recBtn = document.getElementById("rec");
+recBtn.onclick = () => {
+  if (recorder) {
+    recorder.stop(); recorder = null;
+    recBtn.classList.remove("on"); recBtn.textContent = "● nahrát";
+    return;
+  }
+  chunks = [];
+  recorder = new MediaRecorder(canvas.captureStream(30), {mimeType: "video/webm"});
+  recorder.ondataavailable = (e) => chunks.push(e.data);
+  recorder.onstop = () => {
+    const a = document.createElement("a");
+    a.download = `brainscope-${Date.now()}.webm`;
+    a.href = URL.createObjectURL(new Blob(chunks, {type: "video/webm"}));
+    a.click();
+  };
+  recorder.start();
+  recBtn.classList.add("on"); recBtn.textContent = "■ stop";
+};
+
+// steering controls (shown only when the server has directions loaded)
+const steerbox = document.getElementById("steerbox");
+const dirSel = document.getElementById("dir");
+const strengthEl = document.getElementById("strength");
+const svalEl = document.getElementById("sval");
+async function initSteer() {
+  const r = await fetch("/directions").then(r => r.json()).catch(() => null);
+  if (!r || !r.directions.length) return;
+  dirSel.innerHTML = r.directions.map(d => `<option>${d}</option>`).join("");
+  steerbox.style.display = "inline";
+  if (r.steer) { dirSel.value = r.steer.name; strengthEl.value = r.steer.strength; svalEl.textContent = (+r.steer.strength).toFixed(1); }
+}
+async function pushSteer() {
+  svalEl.textContent = (+strengthEl.value).toFixed(1);
+  await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value})});
+}
+strengthEl.addEventListener("change", pushSteer);
+dirSel.addEventListener("change", pushSteer);
+initSteer();
 </script>
