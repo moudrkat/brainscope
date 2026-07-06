@@ -16,18 +16,27 @@ early work-in-progress - see below.
 ## Quickstart
 
 ```bash
-pip install -e .
-brainscope --model qwen3-4b          # preset, or any HF model id
+git clone https://github.com/moudrkat/brainscope && cd brainscope
+pip install -e .                     # needs Python 3.11+
+brainscope --model tiny              # 0.5B, runs on CPU - good first try
 # → your app:  http://<host>:8010/v1   (chat completions, incl. tool calls)
 # → your eyes: http://<host>:8010      (opens automatically)
 ```
 
 No app handy? The viz page has a built-in chat box - type and watch.
 
-Bigger models on a 16 GB card:
+`--model` takes any Hugging Face model id, plus a few presets: `tiny`
+(Qwen2.5-0.5B, CPU-friendly), `qwen3-4b`, `qwen3-8b`, `qwen3.5-9b`,
+`gemma-e4b`. Bigger models on a 16 GB card:
 
 ```bash
 brainscope --model qwen3.5-9b --quantize 8bit
+```
+
+Pointing your app at it is one line - wherever it builds its OpenAI client:
+
+```python
+client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 ```
 
 ## What am I looking at?
