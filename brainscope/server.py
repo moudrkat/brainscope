@@ -15,7 +15,9 @@ steering vectors work — and, later, for applying them).
 
 import argparse
 import asyncio
+import base64
 import gc
+import math
 import threading
 import json
 import re
@@ -23,6 +25,12 @@ import time
 import uuid
 from pathlib import Path
 
+# must be set before torch initializes CUDA: lets the allocator grow segments
+# instead of fragmenting fixed pools (long-prompt prefill + KV-cache churn)
+import os
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -42,7 +50,14 @@ PRESETS = {
 app = FastAPI(title="brainscope")
 state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
                "loop": None, "device": "cpu", "model_name": "",
-               "steer": None, "steer_handles": [], "policy": []}
+               "steer": None, "steer_handles": [], "policy": [], "policy_on": True,
+               "gen": None, "probes": {"attn": {}, "mlp": {}}, "lens": False,
+               "viz": True}
+
+# Prefill batch size: bounds eager attention's transient chunk×seq matrix.
+# Eager softmax upcasts to fp32, so the transient is chunk × seq × heads × 4 B
+# — at 128 that's ~0.4 GB for a 24k prompt, safe next to model + KV cache.
+PREFILL_CHUNK = 128
 
 # Tool-call output formats differ per model family; try each in order.
 TOOL_CALL_PATTERNS = [
@@ -56,7 +71,10 @@ def load_model(name: str, device: str | None, quantize: str | None = None) -> No
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32}
+    # eager attention so output_attentions really returns weights (sdpa/flash
+    # never materialize them) — brainscope trades speed for sight everywhere
+    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32,
+              "attn_implementation": "eager"}
     if quantize:  # fit bigger models on a 16 GB card at some quality cost
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = (
@@ -70,6 +88,39 @@ def load_model(name: str, device: str | None, quantize: str | None = None) -> No
     state["model"] = model.eval()
     state["device"] = dev
     state["model_name"] = name
+    _install_probe_hooks()
+
+
+def _install_probe_hooks() -> None:
+    """Forward hooks on every attention and MLP sublayer recording the L2 norm
+    of their output at the last position — how hard each sublayer worked on
+    the current token. Powers the live architecture view."""
+    probes = state["probes"] = {"attn": {}, "mlp": {}}
+
+    def make(kind: str, idx: int):
+        def hook(_module, _inp, out):
+            t = out[0] if isinstance(out, tuple) else out
+            probes[kind][idx] = float(t[0, -1].float().norm())
+        return hook
+
+    for i, layer in enumerate(_decoder_layers(state["model"])):
+        if hasattr(layer, "self_attn"):
+            layer.self_attn.register_forward_hook(make("attn", i))
+        if hasattr(layer, "mlp"):
+            layer.mlp.register_forward_hook(make("mlp", i))
+
+
+def _final_norm_and_head():
+    model = state["model"]
+    head = model.get_output_embeddings()
+    for attr in ("model", "transformer"):
+        core = getattr(model, attr, None)
+        if core is not None:
+            for nattr in ("norm", "ln_f", "final_layernorm"):
+                norm = getattr(core, nattr, None)
+                if norm is not None:
+                    return norm, head
+    return None, head
 
 
 async def broadcast(payload: dict) -> None:
@@ -135,11 +186,54 @@ def _layer_signals(hidden_states, directions):
     return norms, cos
 
 
+def _logit_lens(hidden_states, top: int = 5):
+    """What the model would say if it stopped at each layer: every layer's
+    hidden state pushed through the final norm + lm_head. Watching the answer
+    crystallize with depth is the point of the exercise."""
+    norm, head = _final_norm_and_head()
+    if norm is None or head is None:
+        return None
+    hs = torch.stack([h[0, -1] for h in hidden_states[1:]])  # [n_layers, hidden]
+    dtype = next(head.parameters()).dtype
+    probs = torch.softmax(head(norm(hs.to(dtype))).float(), dim=-1)
+    p, idx = probs.topk(top, dim=-1)
+    tok = state["tokenizer"]
+    return [[{"t": tok.decode(int(idx[layer, k])), "p": round(float(p[layer, k]), 4)}
+             for k in range(top)] for layer in range(hs.shape[0])]
+
+
+def _attn_signals(attentions, gen: dict):
+    """Digest one decode step's attention weights.
+
+    Stores full mean-over-heads rows (uint8) + last-step per-head detail in
+    the generation record for the HTTP endpoints; returns lightweight per-layer
+    summaries (entropy of the mean pattern, argmax position, per-head entropy)
+    for the websocket stream.
+    """
+    entropy, top, head_entropy, mean_rows, head_rows = [], [], [], [], []
+    for a in attentions:
+        w = a[0, :, -1, :].float()          # [heads, seq]
+        mean = w.mean(0)                    # [seq]
+        log_seq = math.log(max(2, w.shape[-1]))
+        mean_rows.append((mean * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy().tobytes())
+        head_rows.append((w * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy().tobytes())
+        he = -(w * (w + 1e-9).log()).sum(-1) / log_seq          # [heads], 0..1
+        head_entropy.append([round(float(x), 3) for x in he])
+        me = -(mean * (mean + 1e-9).log()).sum() / log_seq
+        entropy.append(round(float(me), 3))
+        top.append(int(mean.argmax()))
+    gen["attn_rows"].append(mean_rows)
+    gen["last_heads"] = head_rows           # only the newest token, per layer
+    return entropy, top, head_entropy
+
+
 def _match_policy(tags: dict) -> dict | None:
     """First steering-policy rule whose every `match` key equals the request's
     tag (case-insensitive); missing match keys are wildcards. Lets an app tag
     requests (OpenAI `metadata`: e.g. {"agent": "super_agent", "phase":
     "DISCUSS"}) and keep all steering knowledge on the brainscope side."""
+    if not state["policy_on"]:
+        return None
     for rule in state["policy"]:
         match = rule.get("match", {})
         if all(str(tags.get(k, "")).lower() == str(v).lower() for k, v in match.items()):
@@ -200,8 +294,17 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
-    notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"],
-            "steer": active_steer, "tags": tags or {}})
+
+    n_prompt = ids.shape[1]
+    prompt_ids = ids[0].tolist()[-4096:]  # axis labels; very long prompts keep the tail
+    gen = {"id": uuid.uuid4().hex[:12], "n_prompt": n_prompt,
+           "prompt_offset": n_prompt - len(prompt_ids),
+           "prompt_tokens": [tok.decode(i) for i in prompt_ids],
+           "tokens": [], "norms": [], "lens": [], "attn_rows": [], "last_heads": [],
+           "steer": active_steer, "tags": tags or {}, "done": False}
+    state["gen"] = gen
+    notify({"type": "start", "gen_id": gen["id"], "prompt_tokens": n_prompt,
+            "model": state["model_name"], "steer": active_steer, "tags": tags or {}})
 
     # compute lm_head only for the last position — full-prompt logits of a 20k
     # prompt × 150k vocab would be ~7 GB (transformers materializes them all)
@@ -213,34 +316,61 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             logits_kw = {kw: 1}
             break
 
-    for step in range(max_new_tokens):
-        # hidden states only for DECODE steps — prefill hidden states of a 20k
-        # prompt would eat gigabytes and we only visualize the answer
-        out = model(input_ids=ids if past is None else ids[:, -1:],
-                    past_key_values=past, output_hidden_states=past is not None,
+    # prefill in chunks — with eager attention a single full-prompt forward
+    # materializes the whole seq×seq attention matrix (a 24k-token agent
+    # prompt ≈ 37 GB); chunked, the transient is only chunk×seq per layer
+    out = None
+    for i in range(0, ids.shape[1], PREFILL_CHUNK):
+        out = model(input_ids=ids[:, i:i + PREFILL_CHUNK], past_key_values=past,
                     use_cache=True, **logits_kw)
         past = out.past_key_values
+    if state["device"] == "cuda":
+        torch.cuda.empty_cache()   # drop prefill transients before decode
+
+    for step in range(max_new_tokens):
+        if step:
+            # hidden states/attentions only for DECODE steps — prefill signals
+            # of a 20k prompt would eat gigabytes, we only visualize the answer.
+            # viz off = dark mode: skip all capture, just generate.
+            capture = state["viz"]
+            out = model(input_ids=ids[:, -1:], past_key_values=past,
+                        output_hidden_states=capture, output_attentions=capture,
+                        use_cache=True, **logits_kw)
+            past = out.past_key_values
         logits = out.logits[0, -1]
         if temperature and temperature > 0:
             probs = torch.softmax(logits / temperature, dim=-1)
             next_id = torch.multinomial(probs, 1)
         else:
             next_id = logits.argmax().reshape(1)
+        piece = tok.decode(next_id)
+        payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
         if out.hidden_states is not None:
             norms, cos = _layer_signals(out.hidden_states, state["directions"])
-            piece = tok.decode(next_id)
-            notify({"type": "token", "i": step, "text": piece, "norms": norms, "cos": cos})
-        else:
-            piece = tok.decode(next_id)
-            notify({"type": "token", "i": step, "text": piece,
-                    "norms": [], "cos": {}})
+            payload.update({"norms": norms, "cos": cos})
+            probes = state["probes"]
+            n_layers = len(norms)
+            payload["attn_norm"] = [round(probes["attn"].get(i, 0.0), 2) for i in range(n_layers)]
+            payload["mlp_norm"] = [round(probes["mlp"].get(i, 0.0), 2) for i in range(n_layers)]
+            if state["lens"]:
+                lens = _logit_lens(out.hidden_states)
+                payload["lens"] = lens
+                gen["lens"].append(lens)
+            if out.attentions:
+                entropy, top, head_entropy = _attn_signals(out.attentions, gen)
+                payload.update({"attn_entropy": entropy, "attn_top": top,
+                                "head_entropy": head_entropy})
+            gen["tokens"].append(piece)
+            gen["norms"].append(norms)
+        notify(payload)
         generated.append(int(next_id))
         ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
         if int(next_id) == tok.eos_token_id:
             break
 
     text = tok.decode(generated, skip_special_tokens=False)
-    notify({"type": "done", "completion_tokens": len(generated)})
+    gen["done"] = True
+    notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated)})
     return text
 
 
@@ -317,9 +447,112 @@ async def info():
     cfg = state["model"].config
     return {"model": state["model_name"],
             "n_layers": getattr(cfg, "num_hidden_layers", None),
+            "n_heads": getattr(cfg, "num_attention_heads", None),
+            "n_kv_heads": getattr(cfg, "num_key_value_heads", None),
             "hidden_size": getattr(cfg, "hidden_size", None),
+            "intermediate_size": getattr(cfg, "intermediate_size", None),
             "vocab_size": getattr(cfg, "vocab_size", None),
+            "lens": state["lens"],
+            "viz": state["viz"],
             "params_b": round(sum(p.numel() for p in state["model"].parameters()) / 1e9, 1)}
+
+
+@app.get("/gen")
+async def gen_meta():
+    """Metadata + light signals of the current/last generation (for viz
+    late-joiners; the heavy attention data stays behind /gen/attention)."""
+    g = state["gen"]
+    if not g:
+        return JSONResponse({"error": "no generation yet"}, status_code=404)
+    keys = ("id", "n_prompt", "prompt_offset", "prompt_tokens", "tokens",
+            "norms", "lens", "steer", "tags", "done")
+    return {k: g[k] for k in keys}
+
+
+@app.get("/gen/attention")
+async def gen_attention(layer: int = 0, since: int = 0):
+    """Mean-over-heads attention rows for one layer, whole generation so far.
+    rows[j] (base64 uint8, 255 = all attention) is the pattern while emitting
+    answer token j+1, over positions 0 .. n_prompt+j (token 0 comes from
+    prefill, which we don't capture). `since` skips already-fetched rows so
+    live polling stays incremental instead of re-shipping megabytes."""
+    g = state["gen"]
+    if not g or not g["attn_rows"]:
+        return JSONResponse({"error": "no attention captured yet"}, status_code=404)
+    if not 0 <= layer < len(g["attn_rows"][0]):
+        return JSONResponse({"error": "layer out of range"}, status_code=400)
+    since = max(0, since)
+    return {"id": g["id"], "layer": layer, "n_prompt": g["n_prompt"], "since": since,
+            "total": len(g["attn_rows"]),
+            "rows": [base64.b64encode(r[layer]).decode() for r in g["attn_rows"][since:]]}
+
+
+@app.get("/gen/heads")
+async def gen_heads(layer: int = 0):
+    """Per-head attention of the NEWEST token for one layer (heads × seq,
+    base64 uint8, row-major). Head detail is kept for the latest step only —
+    storing it for every token would be gigabytes."""
+    g = state["gen"]
+    if not g or not g["last_heads"]:
+        return JSONResponse({"error": "no attention captured yet"}, status_code=404)
+    if not 0 <= layer < len(g["last_heads"]):
+        return JSONResponse({"error": "layer out of range"}, status_code=400)
+    data = g["last_heads"][layer]
+    seq = g["n_prompt"] + len(g["attn_rows"])  # may be 1 step stale mid-generation
+    if len(data) % seq:
+        seq = len(data) // max(1, len(data) // seq)
+    return {"id": g["id"], "layer": layer, "seq": seq,
+            "heads": len(data) // seq, "data": base64.b64encode(data).decode()}
+
+
+@app.post("/viz")
+async def set_viz(body: dict):
+    """Toggle signal capture: {"on": bool}. Off = dark mode — the model just
+    generates (still eager-attention slow, but no lens matmuls, no GPU→CPU
+    copies, no per-token streaming)."""
+    state["viz"] = bool(body.get("on", True))
+    return {"on": state["viz"]}
+
+
+def _piece_at(g: dict, pos: int) -> str | None:
+    """Decoded token at an absolute position, if we have it: prompt tail is
+    stored decoded; answer tokens start from the second one (prefill emits
+    the first without capture)."""
+    if pos < g["n_prompt"]:
+        i = pos - g["prompt_offset"]
+        return g["prompt_tokens"][i] if i >= 0 else None
+    k = pos - g["n_prompt"]
+    return g["tokens"][k - 1] if k >= 1 else None
+
+
+@app.get("/gen/sources")
+async def gen_sources(step: int = -1, top: int = 8):
+    """Which positions fed answer step `step` (default latest): the step's
+    mean-over-heads attention rows averaged across ALL layers, top positions
+    returned with decoded context snippets — text, not pixels."""
+    g = state["gen"]
+    if not g or not g["attn_rows"]:
+        return JSONResponse({"error": "no attention captured yet"}, status_code=404)
+    if step < 0:
+        step = len(g["attn_rows"]) - 1
+    if not 0 <= step < len(g["attn_rows"]):
+        return JSONResponse({"error": "step out of range"}, status_code=400)
+    layers = [np.frombuffer(r, dtype=np.uint8).astype(np.float32)
+              for r in g["attn_rows"][step]]
+    mean = np.mean(layers, axis=0)
+    order = np.argsort(mean)[::-1][:top]
+    seq_end = g["n_prompt"] + len(g["tokens"]) + 1
+    sources = []
+    for pos in order:
+        pos = int(pos)
+        if mean[pos] <= 2:      # below quantization noise
+            continue
+        before = "".join(p for p in (_piece_at(g, i) for i in range(max(0, pos - 6), pos)) if p)
+        after = "".join(p for p in (_piece_at(g, i) for i in range(pos + 1, min(seq_end, pos + 7))) if p)
+        sources.append({"pos": pos, "w": round(float(mean[pos]) / 255, 4),
+                        "token": _piece_at(g, pos), "before": before, "after": after,
+                        "side": "prompt" if pos < g["n_prompt"] else "answer"})
+    return {"step": step, "sources": sources}
 
 
 @app.get("/directions")
@@ -371,34 +604,45 @@ async def delete_direction(name: str):
 def _persist_policy() -> None:
     path = state.get("policy_path")
     if path:
-        Path(path).write_text(json.dumps(state["policy"], ensure_ascii=False, indent=1))
+        Path(path).write_text(json.dumps(
+            {"enabled": state["policy_on"], "policy": state["policy"]},
+            ensure_ascii=False, indent=1))
 
 
 @app.get("/policy")
 async def get_policy():
-    return {"policy": state["policy"]}
+    return {"policy": state["policy"], "enabled": state["policy_on"]}
 
 
 @app.post("/policy")
 async def set_policy(body: dict):
-    """Replace the steering policy: {"policy": [{"match": {tag: value, ...},
-    "steer": {"name", "strength", "layer_from", "layer_to"}}, ...]}.
-    First matching rule wins; missing match keys are wildcards."""
+    """Replace the steering policy and/or flip it on and off:
+    {"policy": [{"match": {tag: value, ...},
+                 "steer": {"name", "strength", "layer_from", "layer_to"}}, ...],
+     "enabled": bool} — both keys optional, so {"enabled": false} pauses the
+    rules without losing them. First matching rule wins; missing match keys
+    are wildcards."""
     rules = body.get("policy")
-    if not isinstance(rules, list):
-        return JSONResponse({"error": "expected {policy: [{match, steer}, ...]}"},
+    if rules is None and "enabled" not in body:
+        return JSONResponse({"error": "expected {policy: [...]} and/or {enabled: bool}"},
                             status_code=400)
-    for rule in rules:
-        if not isinstance(rule, dict):
-            return JSONResponse({"error": "each rule must be an object"}, status_code=400)
-        name = (rule.get("steer") or {}).get("name")
-        if name and name not in state["directions"]:
-            return JSONResponse({"error": f"unknown direction {name!r}",
-                                 "directions": sorted(state["directions"])},
+    if rules is not None:
+        if not isinstance(rules, list):
+            return JSONResponse({"error": "expected {policy: [{match, steer}, ...]}"},
                                 status_code=400)
-    state["policy"] = rules
+        for rule in rules:
+            if not isinstance(rule, dict):
+                return JSONResponse({"error": "each rule must be an object"}, status_code=400)
+            name = (rule.get("steer") or {}).get("name")
+            if name and name not in state["directions"]:
+                return JSONResponse({"error": f"unknown direction {name!r}",
+                                     "directions": sorted(state["directions"])},
+                                    status_code=400)
+        state["policy"] = rules
+    if "enabled" in body:
+        state["policy_on"] = bool(body["enabled"])
     _persist_policy()
-    return {"policy": rules}
+    return {"policy": state["policy"], "enabled": state["policy_on"]}
 
 
 @app.post("/steer")
@@ -433,6 +677,9 @@ def main() -> None:
                         help="JSON {name: [hidden_size floats]} to project layers onto")
     parser.add_argument("--policy", type=Path, default=None,
                         help="JSON steering-policy rules matched against request metadata tags")
+    parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
+                        help="logit lens (per-layer next-token readout); auto = on for CUDA, "
+                             "off for CPU (one lm_head matmul per layer per token)")
     parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
     parser.add_argument("--no-browser", action="store_true")
@@ -450,7 +697,13 @@ def main() -> None:
     if args.policy:
         state["policy_path"] = args.policy
         if args.policy.exists():
-            state["policy"] = json.loads(args.policy.read_text())
+            raw = json.loads(args.policy.read_text())
+            if isinstance(raw, dict):    # {"enabled": bool, "policy": [...]}
+                state["policy"] = raw.get("policy", [])
+                state["policy_on"] = bool(raw.get("enabled", True))
+            else:                        # legacy format: bare list of rules
+                state["policy"] = raw
+    state["lens"] = args.lens == "on" or (args.lens == "auto" and state["device"] == "cuda")
     if not args.no_browser:
         import threading
         import webbrowser
