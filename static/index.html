@@ -729,6 +729,7 @@ function showTip(ev, text) {
   tip.style.display = "block";
 }
 canvas.addEventListener("mousemove", (ev) => {
+  if (tipPinned) return;
   if (!cols.length) { tip.style.display = "none"; return; }
   const rect = canvas.getBoundingClientRect();
   const W = canvas.width, H = canvas.height;
@@ -741,10 +742,11 @@ canvas.addEventListener("mousemove", (ev) => {
   const rel = cols[x][l] / (baseline[l] || 1);
   showTip(ev, `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · layer ${l + 1} · ${rel.toFixed(2)}× avg`);
 });
-canvas.addEventListener("mouseleave", () => tip.style.display = "none");
+canvas.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
 
 // hover any word of the answer → what the model almost said + where it decided
 textEl.addEventListener("mousemove", (ev) => {
+  if (tipPinned) return;
   const t = ev.target;
   const lens = t.dataset && t.dataset.k != null ? lensHist[+t.dataset.k] : null;
   if (!lens) { tip.style.display = "none"; return; }
@@ -756,7 +758,7 @@ textEl.addEventListener("mousemove", (ev) => {
   showTip(ev, lensTipText(lens[lens.length - 1], "almost said:") +
     (emerge ? `\n─ decided at layer ${emerge}/${lens.length}` : "\n─ never settled before lm_head"));
 });
-textEl.addEventListener("mouseleave", () => tip.style.display = "none");
+textEl.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
 
 // click any word of the answer → which positions fed it (attention averaged over all layers)
 textEl.addEventListener("click", async (ev) => {
@@ -783,14 +785,28 @@ textEl.addEventListener("click", async (ev) => {
 });
 
 // rich hover for lens cells (probability bars instead of slow native titles)
+// click a cell to PIN the tooltip — it stays for screenshots; click anywhere to release
+let tipPinned = false;
 lensGrid.addEventListener("mousemove", (ev) => {
+  if (tipPinned) return;
   const c = ev.target;
   if (!c._tip) { tip.style.display = "none"; return; }
   showTip(ev, c._tip);
 });
-lensGrid.addEventListener("mouseleave", () => tip.style.display = "none");
+lensGrid.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
+lensGrid.addEventListener("click", (ev) => {
+  const c = ev.target;
+  if (!c._tip) return;
+  ev.stopPropagation();
+  tipPinned = true;
+  showTip(ev, c._tip + "\n📌 pinned — click anywhere to release");
+});
+document.addEventListener("click", () => {
+  if (tipPinned) { tipPinned = false; tip.style.display = "none"; }
+});
 
 attnCanvas.addEventListener("mousemove", (ev) => {
+  if (tipPinned) return;
   if (!lastAttn || !lastAttn.rows.length) { tip.style.display = "none"; return; }
   const rect = attnCanvas.getBoundingClientRect();
   const {rows, nPrompt, view} = lastAttn;
@@ -804,7 +820,7 @@ attnCanvas.addEventListener("mousemove", (ev) => {
   const tok = t != null ? ` ${JSON.stringify(t)}` : "";
   showTip(ev, `step ${y + 1} looks at pos ${x} (${side}${tok}) · w ${(rows[y][x] / 255).toFixed(3)}`);
 });
-attnCanvas.addEventListener("mouseleave", () => tip.style.display = "none");
+attnCanvas.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
 
 // PNG snapshot
 document.getElementById("snap").onclick = () => {
