@@ -91,14 +91,8 @@ def _decoder_layers(model):
     raise RuntimeError("cannot locate decoder layers on this architecture")
 
 
-def apply_steering(name: str | None, strength: float, layer_from: int, layer_to: int) -> dict:
-    """(Re)install activation-addition hooks: h += strength * direction."""
-    for h in state["steer_handles"]:
-        h.remove()
-    state["steer_handles"] = []
-    if not name or strength == 0:
-        state["steer"] = None
-        return {"active": False}
+def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int) -> list:
+    """Register activation-addition hooks (h += strength * direction), return handles."""
     vec = state["directions"][name]
 
     def hook(_module, _inp, out):
@@ -108,8 +102,23 @@ def apply_steering(name: str | None, strength: float, layer_from: int, layer_to:
 
     layers = _decoder_layers(state["model"])
     layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
-    for i in range(max(0, layer_from), layer_to + 1):
-        state["steer_handles"].append(layers[i].register_forward_hook(hook))
+    return [layers[i].register_forward_hook(hook)
+            for i in range(max(0, layer_from), layer_to + 1)]
+
+
+def apply_steering(name: str | None, strength: float, layer_from: int, layer_to: int) -> dict:
+    """(Re)install the GLOBAL steering hooks (the viz slider). Per-request
+    steering (a `steering` object in a chat completions request) temporarily
+    replaces these for the duration of that one generation."""
+    for h in state["steer_handles"]:
+        h.remove()
+    state["steer_handles"] = []
+    if not name or strength == 0:
+        state["steer"] = None
+        return {"active": False}
+    state["steer_handles"] = _install_steer_hooks(name, strength, layer_from, layer_to)
+    layers = _decoder_layers(state["model"])
+    layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
     state["steer"] = {"name": name, "strength": strength,
                       "layers": [max(0, layer_from), layer_to]}
     return {"active": True, **state["steer"]}
@@ -130,24 +139,55 @@ _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel ag
 
 
 @torch.inference_mode()
-def generate_with_signals(messages, tools, max_new_tokens, temperature, notify):
-    """Token-by-token generation, calling notify(payload) per token."""
+def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
+                          steering: dict | None = None):
+    """Token-by-token generation, calling notify(payload) per token.
+
+    `steering` scopes activation addition to THIS request only: it overrides
+    the global slider for the duration of the generation (including an
+    explicit "no steering" via strength 0), then the global state is
+    restored. This is how an app steers one agent without steering everyone
+    else on the server.
+    """
     with _GEN_LOCK:
+        request_handles = []
+        active_steer = state["steer"]
+        if steering is not None:
+            for h in state["steer_handles"]:
+                h.remove()
+            state["steer_handles"] = []
+            name = steering.get("name")
+            strength = float(steering.get("strength") or 0)
+            if name and strength != 0:
+                layer_from = int(steering.get("layer_from", 0))
+                layer_to = int(steering.get("layer_to", -1))
+                request_handles = _install_steer_hooks(name, strength, layer_from, layer_to)
+                active_steer = {"name": name, "strength": strength,
+                                "layers": [layer_from, layer_to], "scope": "request"}
+            else:
+                active_steer = None
         try:
-            return _generate(messages, tools, max_new_tokens, temperature, notify)
+            return _generate(messages, tools, max_new_tokens, temperature, notify, active_steer)
         finally:
+            for h in request_handles:
+                h.remove()
+            if steering is not None and state["steer"]:
+                s = state["steer"]
+                state["steer_handles"] = _install_steer_hooks(
+                    s["name"], s["strength"], s["layers"][0], s["layers"][1])
             gc.collect()
             if state["device"] == "cuda":
                 torch.cuda.empty_cache()
 
 
-def _generate(messages, tools, max_new_tokens, temperature, notify):
+def _generate(messages, tools, max_new_tokens, temperature, notify, active_steer=None):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
-    notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"]})
+    notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"],
+            "steer": active_steer})
 
     # compute lm_head only for the last position — full-prompt logits of a 20k
     # prompt × 150k vocab would be ~7 GB (transformers materializes them all)
@@ -227,9 +267,23 @@ async def chat_completions(body: dict):
     def notify(payload):
         asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
 
+    # Per-request steering: {"steering": {"name", "strength", "layer_from",
+    # "layer_to"}} in the body (OpenAI SDKs pass it via extra_body). Scoped to
+    # this request; {"strength": 0} explicitly opts out of any global steering.
+    steering = body.get("steering")
+    if steering is not None:
+        if not isinstance(steering, dict):
+            return JSONResponse({"error": "steering must be an object"}, status_code=400)
+        name = steering.get("name")
+        if name and name not in state["directions"]:
+            return JSONResponse(
+                {"error": f"unknown direction {name!r}",
+                 "directions": sorted(state["directions"])}, status_code=400)
+
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
-        int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0), notify)
+        int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
+        notify, steering)
     return JSONResponse(to_openai_response(text, state["model_name"]))
 
 

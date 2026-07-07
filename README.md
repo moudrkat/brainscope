@@ -88,12 +88,27 @@ manageable over HTTP: `GET /directions`, `POST /directions` with `{"name",
 "vector"}` (any `[hidden_size floats]` loads, bring your own), `DELETE
 /directions/{name}`.
 
+The slider and `/steer` are **global** - they steer every request the server
+serves, which is right for hand-exploration and wrong for apps (we learned
+this by breaking a websearch agent with a vector tuned for a chat agent).
+Apps should instead scope steering to a single request by adding a
+`steering` object to the chat completions body:
+
+```python
+client.chat.completions.create(model=..., messages=...,
+    extra_body={"steering": {"name": "no-smalltalk", "strength": 8,
+                             "layer_from": 16, "layer_to": 18}})
+```
+
+It applies only to that generation and the global setting is restored after;
+`{"strength": 0}` explicitly opts one request *out* of global steering.
+
 Still early: extraction quality decides everything, over-steering degrades
 the model into repetition, and per-layer vectors are on the roadmap. Before
 steering anything real, read [docs/steering.md](docs/steering.md) - a case
 study and the lessons we learned the hard way (what data works, which layers
-to steer, how over-steering fails, and why steering a shared server steers
-*everyone* on it).
+to steer, how over-steering fails, and how the global/per-request split
+saves your other agents).
 
 ## Will it work with my app?
 
