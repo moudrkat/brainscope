@@ -42,7 +42,7 @@ PRESETS = {
 app = FastAPI(title="brainscope")
 state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
                "loop": None, "device": "cpu", "model_name": "",
-               "steer": None, "steer_handles": []}
+               "steer": None, "steer_handles": [], "policy": []}
 
 # Tool-call output formats differ per model family; try each in order.
 TOOL_CALL_PATTERNS = [
@@ -135,12 +135,24 @@ def _layer_signals(hidden_states, directions):
     return norms, cos
 
 
+def _match_policy(tags: dict) -> dict | None:
+    """First steering-policy rule whose every `match` key equals the request's
+    tag (case-insensitive); missing match keys are wildcards. Lets an app tag
+    requests (OpenAI `metadata`: e.g. {"agent": "super_agent", "phase":
+    "DISCUSS"}) and keep all steering knowledge on the brainscope side."""
+    for rule in state["policy"]:
+        match = rule.get("match", {})
+        if all(str(tags.get(k, "")).lower() == str(v).lower() for k, v in match.items()):
+            return rule.get("steer")
+    return None
+
+
 _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel agents must queue
 
 
 @torch.inference_mode()
 def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
-                          steering: dict | None = None):
+                          steering: dict | None = None, tags: dict | None = None):
     """Token-by-token generation, calling notify(payload) per token.
 
     `steering` scopes activation addition to THIS request only: it overrides
@@ -167,7 +179,8 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
             else:
                 active_steer = None
         try:
-            return _generate(messages, tools, max_new_tokens, temperature, notify, active_steer)
+            return _generate(messages, tools, max_new_tokens, temperature, notify,
+                             active_steer, tags)
         finally:
             for h in request_handles:
                 h.remove()
@@ -180,14 +193,15 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 torch.cuda.empty_cache()
 
 
-def _generate(messages, tools, max_new_tokens, temperature, notify, active_steer=None):
+def _generate(messages, tools, max_new_tokens, temperature, notify,
+              active_steer=None, tags=None):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
     notify({"type": "start", "prompt_tokens": ids.shape[1], "model": state["model_name"],
-            "steer": active_steer})
+            "steer": active_steer, "tags": tags or {}})
 
     # compute lm_head only for the last position — full-prompt logits of a 20k
     # prompt × 150k vocab would be ~7 GB (transformers materializes them all)
@@ -270,7 +284,13 @@ async def chat_completions(body: dict):
     # Per-request steering: {"steering": {"name", "strength", "layer_from",
     # "layer_to"}} in the body (OpenAI SDKs pass it via extra_body). Scoped to
     # this request; {"strength": 0} explicitly opts out of any global steering.
+    # Without an explicit steering object, request tags (OpenAI `metadata`,
+    # e.g. {"agent": ..., "phase": ...}) are matched against the steering
+    # policy — the app stays steering-agnostic, rules live here.
+    tags = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     steering = body.get("steering")
+    if steering is None and tags:
+        steering = _match_policy(tags)
     if steering is not None:
         if not isinstance(steering, dict):
             return JSONResponse({"error": "steering must be an object"}, status_code=400)
@@ -283,7 +303,7 @@ async def chat_completions(body: dict):
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
-        notify, steering)
+        notify, steering, tags)
     return JSONResponse(to_openai_response(text, state["model_name"]))
 
 
@@ -348,6 +368,39 @@ async def delete_direction(name: str):
     return {"directions": sorted(state["directions"])}
 
 
+def _persist_policy() -> None:
+    path = state.get("policy_path")
+    if path:
+        Path(path).write_text(json.dumps(state["policy"], ensure_ascii=False, indent=1))
+
+
+@app.get("/policy")
+async def get_policy():
+    return {"policy": state["policy"]}
+
+
+@app.post("/policy")
+async def set_policy(body: dict):
+    """Replace the steering policy: {"policy": [{"match": {tag: value, ...},
+    "steer": {"name", "strength", "layer_from", "layer_to"}}, ...]}.
+    First matching rule wins; missing match keys are wildcards."""
+    rules = body.get("policy")
+    if not isinstance(rules, list):
+        return JSONResponse({"error": "expected {policy: [{match, steer}, ...]}"},
+                            status_code=400)
+    for rule in rules:
+        if not isinstance(rule, dict):
+            return JSONResponse({"error": "each rule must be an object"}, status_code=400)
+        name = (rule.get("steer") or {}).get("name")
+        if name and name not in state["directions"]:
+            return JSONResponse({"error": f"unknown direction {name!r}",
+                                 "directions": sorted(state["directions"])},
+                                status_code=400)
+    state["policy"] = rules
+    _persist_policy()
+    return {"policy": rules}
+
+
 @app.post("/steer")
 async def steer(body: dict):
     return apply_steering(body.get("name"), float(body.get("strength") or 0),
@@ -378,6 +431,8 @@ def main() -> None:
     parser.add_argument("--device", default=None)
     parser.add_argument("--directions", type=Path, default=None,
                         help="JSON {name: [hidden_size floats]} to project layers onto")
+    parser.add_argument("--policy", type=Path, default=None,
+                        help="JSON steering-policy rules matched against request metadata tags")
     parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
     parser.add_argument("--no-browser", action="store_true")
@@ -392,6 +447,10 @@ def main() -> None:
             raw = json.loads(args.directions.read_text())
             state["directions"] = {k: torch.tensor(v).float().to(state["device"])
                                    for k, v in raw.items()}
+    if args.policy:
+        state["policy_path"] = args.policy
+        if args.policy.exists():
+            state["policy"] = json.loads(args.policy.read_text())
     if not args.no_browser:
         import threading
         import webbrowser

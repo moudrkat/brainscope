@@ -103,6 +103,20 @@ client.chat.completions.create(model=..., messages=...,
 It applies only to that generation and the global setting is restored after;
 `{"strength": 0}` explicitly opts one request *out* of global steering.
 
+Even better, keep the app steering-agnostic: tag requests with standard
+OpenAI `metadata` (e.g. `{"agent": "support-bot", "phase": "triage"}`) and
+give brainscope a **steering policy** - rules that map tags to steering,
+managed over HTTP and persisted with `--policy policy.json`:
+
+```bash
+curl -X POST localhost:8010/policy -d '{"policy": [
+  {"match": {"agent": "support-bot", "phase": "triage"},
+   "steer": {"name": "no-smalltalk", "strength": 8, "layer_from": 16, "layer_to": 18}}]}'
+```
+
+First matching rule wins, missing match keys are wildcards, and the viz
+labels every generation with its tags - so you also see *who* is talking.
+
 Still early: extraction quality decides everything, over-steering degrades
 the model into repetition, and per-layer vectors are on the roadmap. Before
 steering anything real, read [docs/steering.md](docs/steering.md) - a case
