@@ -26,38 +26,109 @@
          transition:color .15s, border-color .15s; }
   .btn:hover { color:var(--ink); border-color:var(--line2); }
   .btn.on { color:#e5636b; border-color:#e5636b; }
+  .btn.pol-on { color:var(--live); border-color:var(--live); }
+  .rbtn { background:var(--panel2); color:var(--faint); border:1px solid var(--line);
+          font:600 10px var(--mono); padding:3px 8px; border-radius:3px; cursor:pointer; }
+  .rbtn.on { color:var(--accent); border-color:var(--accent); }
+  #attntop { margin-top:7px; font-size:11px; color:var(--muted); line-height:1.9; }
+  #attntop span { background:var(--panel2); border:1px solid var(--line); border-radius:3px;
+                  padding:1px 6px; margin-right:4px; white-space:pre; }
+  #attntop i { color:var(--accent); font-style:normal; }
   #status { display:flex; align-items:center; gap:8px; color:var(--faint); font-size:12px; }
   #dot { width:8px; height:8px; border-radius:50%; background:var(--faint); }
   #dot.live { background:var(--live); animation:pulse 1.1s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity:.35; } }
-  @media (prefers-reduced-motion: reduce) { #dot.live { animation:none; } }
+  @media (prefers-reduced-motion: reduce) { #dot.live { animation:none; } .lenscol { animation:none; } }
 
-  #wrap { padding:0 26px 22px; max-width:1400px; margin:0 auto; }
+  #wrap { padding:0 26px 22px; max-width:1500px; margin:0 auto; }
   #modelinfo { color:var(--faint); font-size:11.5px; margin-bottom:10px; letter-spacing:.04em; }
   #modelinfo b { color:var(--muted); font-weight:600; }
 
-  #scene { display:flex; gap:14px; align-items:stretch; }
-  #schema { width:104px; display:flex; flex-direction:column; text-align:center;
-            font-size:10px; color:var(--faint); line-height:1.5; }
-  .sch.top, .sch.bot { padding:6px 0; letter-spacing:.05em; }
-  .sch.top b, .sch.bot b { color:var(--muted); font-weight:600; display:block; }
-  .arrow { color:var(--line2); font-size:12px; display:block; }
-  .sch.mid { flex:1; border:1px solid var(--line2); border-radius:6px; margin:2px 8px;
-             position:relative; overflow:hidden; background:var(--panel2);
-             box-shadow:inset 0 0 18px rgba(0,0,0,.5); }
-  #spine { position:absolute; inset:0; width:100%; height:100%; }
-  #layermarks { position:absolute; inset:0; display:flex; flex-direction:column-reverse;
-                justify-content:space-between; padding:4px 0; pointer-events:none; }
-  #layermarks span { font-size:9px; color:#d7e0ec; text-shadow:0 1px 4px #000, 0 0 2px #000; }
+  #scene { display:flex; gap:16px; align-items:flex-start; }
 
-  #heatwrap { flex:1; min-width:0; display:flex; flex-direction:column; }
-  #frame { border:1px solid var(--line); border-radius:6px; background:var(--panel);
-           padding:10px; box-shadow:0 6px 30px rgba(0,0,0,.35); }
-  canvas#heat { width:100%; height:420px; display:block; background:var(--panel2);
-                border-radius:3px; }
-  #xaxis { text-align:center; color:var(--faint); font-size:10.5px; margin-top:8px;
-           letter-spacing:.06em; }
+  /* ---- the model itself: clickable architecture ---- */
+  #archcol { width:252px; flex:0 0 auto; }
+  .node { text-align:center; font-size:10.5px; color:var(--faint); letter-spacing:.05em;
+          border:1px solid var(--line); border-radius:6px; background:var(--panel);
+          padding:7px 6px; }
+  .node b { color:var(--muted); font-weight:600; }
+  .node.click { cursor:pointer; transition:border-color .15s, color .15s; }
+  .node.click:hover { border-color:var(--accent); color:var(--ink); }
+  .nodearrow { text-align:center; color:var(--line2); font-size:11px; line-height:1.1; }
+  #arch { border:1px solid var(--line2); border-radius:6px; background:var(--panel2);
+          box-shadow:inset 0 0 18px rgba(0,0,0,.5); padding:3px; margin:2px 0; }
+  #archhead { display:flex; font-size:9px; color:var(--faint); letter-spacing:.04em;
+              padding:2px 2px 3px; }
+  .lrow { display:flex; align-items:stretch; height:13px; margin:0 0 1px; cursor:pointer;
+          border-radius:2px; }
+  .lrow:hover { outline:1px solid var(--line2); }
+  .lrow.sel { outline:1px solid var(--accent); }
+  .ll { width:22px; font-size:9px; color:var(--faint); text-align:right; padding-right:4px;
+        line-height:13px; flex:0 0 auto; }
+  .lrow.sel .ll { color:var(--accent); }
+  .cell { border-radius:1px; margin-right:1px; background:#101927; }
+  .cell.a, .cell.m { width:52px; flex:0 0 auto; }
+  .cell.r { width:9px; flex:0 0 auto; }
+  .ltok { flex:1; min-width:0; font-size:9.5px; line-height:13px; padding-left:5px;
+          white-space:pre; overflow:hidden; text-overflow:ellipsis; color:var(--faint); }
+  #archhead span.ha { width:52px; text-align:center; }
+  #archhead span.hl { width:22px; }
+  #archhead span.hr { width:10px; }
+  #archhead span.ht { flex:1; padding-left:5px; }
+  #archcaption { font-size:9.5px; color:var(--faint); text-align:center; margin-top:5px;
+                 line-height:1.5; }
 
+  /* ---- detail: what you drilled into ---- */
+  #detail { flex:1; min-width:0; }
+  #dtabs { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .tab { background:var(--panel); color:var(--muted); border:1px solid var(--line);
+         padding:6px 14px; font:600 12px var(--mono); cursor:pointer; border-radius:4px; }
+  .tab:hover { color:var(--ink); border-color:var(--line2); }
+  .tab.on { color:var(--accent); border-color:var(--accent); }
+  #tabnote { margin-left:auto; color:var(--faint); font-size:11px; }
+  .panel { display:none; border:1px solid var(--line); border-radius:6px;
+           background:var(--panel); padding:10px; box-shadow:0 6px 30px rgba(0,0,0,.35); }
+  .panel.on { display:block; }
+  .pcap { color:var(--faint); font-size:10.5px; margin-top:8px; letter-spacing:.04em;
+          text-align:center; }
+  .pinfo { color:var(--muted); font-size:11.5px; margin-bottom:6px; }
+  canvas.pcanvas { width:100%; display:block; background:var(--panel2); border-radius:3px; }
+  #heat { height:430px; }
+  #attncanvas { height:400px; }
+  #headscanvas { height:260px; }
+
+  /* ---- logit lens ---- */
+  #lensgrid { display:flex; gap:2px; overflow-x:auto; background:var(--panel2);
+              border-radius:3px; padding:6px; }
+  .lenscol { display:flex; flex-direction:column; gap:1px; flex:0 0 auto;
+             animation:colin .3s ease; }
+  @keyframes colin { from { opacity:0; transform:translateY(5px); } }
+  .lenscol.axis { position:sticky; left:0; background:var(--panel2); z-index:2;
+                  animation:none; }
+  .lenshead { font-size:10px; color:var(--ink); font-weight:700; text-align:center;
+              padding:1px 4px 0; border-bottom:1px solid var(--line2); margin-bottom:2px;
+              white-space:pre; max-width:92px; overflow:hidden; text-overflow:ellipsis;
+              height:26px; }
+  .lenshead small { display:block; font-weight:600; font-size:8.5px; color:var(--live); }
+  .lenscol.axis .lenshead { color:var(--faint); font-weight:400; }
+  .lenscell { font-size:10px; line-height:13px; height:13px; padding:0 4px; min-width:56px;
+              max-width:92px; overflow:hidden; white-space:pre; text-overflow:ellipsis;
+              color:var(--muted); border-radius:2px; }
+  .lenscol.axis .lenscell { min-width:26px; color:var(--faint); font-size:8.5px;
+                            text-align:right; padding-right:6px; }
+  #lensgrid:empty::before { content:"…columns appear as tokens stream (needs --lens on)";
+                            color:var(--faint); font-size:11px; }
+
+  #text .tok { border-radius:2px; }
+  #text .tok:hover { outline:1px solid rgba(232,180,90,.5); cursor:pointer; }
+  #text .tok.src { outline:1px solid var(--live); }
+  #textcap { margin-top:5px; color:var(--faint); font-size:10.5px; letter-spacing:.03em; }
+  #sources { margin-top:8px; font-size:11px; color:var(--muted); line-height:1.9; display:none; }
+  #sources.on { display:block; }
+  #sources span.chip { background:var(--panel2); border:1px solid var(--line); border-radius:3px;
+                       padding:1px 6px; margin-right:4px; white-space:pre; }
+  #sources b { color:var(--accent); font-weight:700; }
+  #sources i { color:var(--accent); font-style:normal; }
   #text { margin-top:14px; padding:13px 16px; background:var(--panel);
           border:1px solid var(--line); border-radius:6px;
           min-height:60px; max-height:170px; overflow-y:auto; white-space:pre-wrap;
@@ -89,7 +160,7 @@
 
   #tip { position:fixed; display:none; background:#18243a; border:1px solid var(--line2);
          border-radius:4px; padding:5px 9px; font-size:11.5px; pointer-events:none;
-         z-index:10; box-shadow:0 4px 14px rgba(0,0,0,.4); }
+         z-index:10; box-shadow:0 4px 14px rgba(0,0,0,.4); white-space:pre; }
 </style>
 
 <header>
@@ -101,6 +172,8 @@
       <span id="sval">0.0</span>
       <input id="lrange" title="steered layer range, e.g. 16-18" spellcheck="false">
     </span>
+    <button id="vizbtn" class="btn">◉ scope</button>
+    <button id="polbtn" class="btn" style="display:none"></button>
     <button id="rec" class="btn">● record</button>
     <button id="snap" class="btn">PNG</button>
     <span id="status"><span id="dot"></span><span id="stxt">connecting…</span></span>
@@ -110,24 +183,74 @@
 <div id="wrap">
   <div id="modelinfo"></div>
   <div id="scene">
-    <div id="schema">
-      <div class="sch top"><b>next word</b><span class="arrow">▲</span>lm_head</div>
-      <div class="sch mid"><canvas id="spine"></canvas><div id="layermarks"></div></div>
-      <div class="sch bot">embedding<span class="arrow">▲</span><b>prompt</b></div>
+    <div id="archcol">
+      <div class="node click" id="node-lmhead"><b>next word</b> — lm_head<br>click for the logit lens</div>
+      <div class="nodearrow">▲</div>
+      <div id="arch">
+        <div id="archhead"><span class="hl"></span><span class="ha">attn</span><span class="ha">mlp</span><span class="hr"></span><span class="ht">layer says…</span></div>
+        <div id="archrows"></div>
+      </div>
+      <div class="nodearrow">▲</div>
+      <div class="node">embedding — <b>prompt</b></div>
+      <div id="archcaption">every layer, live · click one to open its attention</div>
     </div>
-    <div id="heatwrap">
-      <div id="frame"><canvas id="heat"></canvas></div>
-      <div id="xaxis">answer tokens — time runs right →</div>
+
+    <div id="detail">
+      <div id="dtabs">
+        <button class="tab on" data-p="act">activity over time</button>
+        <button class="tab" data-p="attn" id="tab-attn">attention</button>
+        <button class="tab" data-p="heads" id="tab-heads">heads</button>
+        <button class="tab" data-p="lens">logit lens</button>
+        <span id="tabnote"></span>
+      </div>
+      <div class="panel on" id="p-act">
+        <canvas id="heat" class="pcanvas"></canvas>
+        <div class="pcap">each column = one answer token, time runs right → · rows = layers, same order as the
+          architecture · debugging: a suddenly brighter band of columns = the model straining, often right
+          before the answer derails</div>
+      </div>
+      <div class="panel" id="p-attn">
+        <div class="pctl">
+          <span class="pinfo" id="attninfo" style="margin:0">click a layer on the architecture</span>
+          <span style="margin-left:auto">
+            <button class="rbtn on" data-r="focus">answer ± tail</button>
+            <button class="rbtn" data-r="all">whole prompt</button>
+          </span>
+        </div>
+        <canvas id="attncanvas" class="pcanvas"></canvas>
+        <div id="attntop"></div>
+        <div class="pcap">each row = one answer word being written (top = first) · a bright spot = the exact
+          place it was reading at that moment · dashed │ = your prompt ends, the answer begins ·
+          debugging: a stuck vertical bar = repetition loop, attention frozen on one spot</div>
+      </div>
+      <div class="panel" id="p-heads">
+        <div class="pinfo" id="headsinfo">click a layer on the architecture</div>
+        <canvas id="headscanvas" class="pcanvas"></canvas>
+        <div class="pcap">one row per attention head — where each head looks while emitting the newest token ·
+          number = focus entropy (0 sharp → 1 diffuse)</div>
+      </div>
+      <div class="panel" id="p-lens">
+        <div class="pinfo">what the model would say if it stopped at each layer · top row = last layer ·
+          <span style="color:var(--live)">green</span> = layer already agrees with the token that finally came out ·
+          L<i>n</i> under the header = the depth where the answer crystallized · hover a cell for top-3 ·
+          debugging: green wave never arrives = the model is guessing · wave collapses mid-answer = steering too strong</div>
+        <div id="lensgrid"></div>
+      </div>
     </div>
   </div>
+
   <div id="text"></div>
+  <div id="textcap">amber = the model decided late · red = never settled before lm_head ·
+    click any word to see what it was reading while writing it</div>
+  <div id="sources"></div>
   <div id="chat">
     <input id="msg" placeholder="talk to the model — or let your app do the talking and just watch" autocomplete="off">
     <button id="send">send</button>
   </div>
   <div id="legend">
-    each column = one answer token · each row = one layer (the cross-section on the left) ·
-    <span class="sw"></span> how loudly the layer works on that token vs its own average · hover for detail
+    the column on the left is the model itself — <span class="sw"></span> how loudly each part works
+    on the current token vs its own average · click a layer to drill into its attention ·
+    click lm_head to watch the answer crystallize layer by layer
   </div>
 </div>
 <div id="tip"></div>
@@ -141,16 +264,31 @@ const dot = document.getElementById("dot");
 
 let cols = [];        // per token: array of layer norms
 let tokens = [];
+let allTokens = [];   // every generated piece, including the signal-less first one
 let baseline = null;  // per-layer running mean for relative coloring
+let archBase = null;  // running means for attn/mlp sublayer norms
+let generating = false;
+let nLayersTotal = 36;
+let selectedLayer = null;
+let lensOn = false;
 
-function color(t) {   // 0..1 -> deep blue -> teal -> green -> amber
-  const stops = [[16,25,39],[38,90,128],[61,189,125],[232,180,90]];
-  const x = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+const STOPS = [[16,25,39],[38,90,128],[61,189,125],[232,180,90]];
+function colorRGB(t) {
+  const x = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
   const i = Math.floor(x), f = x - i;
-  const a = stops[i], b = stops[Math.min(i + 1, stops.length - 1)];
-  return `rgb(${a.map((v,k)=>Math.round(v+(b[k]-v)*f)).join(",")})`;
+  const a = STOPS[i], b = STOPS[Math.min(i + 1, STOPS.length - 1)];
+  return a.map((v, k) => Math.round(v + (b[k] - v) * f));
 }
+function color(t) { return `rgb(${colorRGB(t).join(",")})`; }
+const LUT = [...Array(256)].map((_, i) => colorRGB(i / 255));
 
+// ---------- activity-over-time heatmap ----------
+let drawQueued = false;
+function scheduleDraw() {   // coalesce per-token repaints into one per frame
+  if (drawQueued) return;
+  drawQueued = true;
+  requestAnimationFrame(() => { drawQueued = false; draw(); });
+}
 function draw() {
   const W = canvas.width = canvas.clientWidth * devicePixelRatio;
   const H = canvas.height = canvas.clientHeight * devicePixelRatio;
@@ -169,19 +307,345 @@ function draw() {
   }
 }
 
-const spine = document.getElementById("spine");
-const spineCtx = spine.getContext("2d");
-function drawSpine(norms) {
-  const W = spine.width = spine.clientWidth * devicePixelRatio;
-  const H = spine.height = spine.clientHeight * devicePixelRatio;
-  const n = norms.length;
-  for (let l = 0; l < n; l++) {
-    const rel = norms[l] / (baseline[l] || 1);
-    spineCtx.fillStyle = color((rel - 0.7) / 0.9);
-    spineCtx.fillRect(0, H - (l + 1) * (H / n), W, H / n - 1);
+// ---------- the architecture: one clickable row per layer ----------
+let archRows = [];    // archRows[l] = {row, a, m, r, t}
+function buildArch(n) {
+  const holder = document.getElementById("archrows");
+  holder.innerHTML = ""; archRows = [];
+  for (let l = n - 1; l >= 0; l--) {
+    const row = document.createElement("div"); row.className = "lrow"; row.dataset.l = l;
+    const ll = document.createElement("span"); ll.className = "ll"; ll.textContent = l + 1;
+    const a = document.createElement("span"); a.className = "cell a";
+    const m = document.createElement("span"); m.className = "cell m";
+    const r = document.createElement("span"); r.className = "cell r";
+    const t = document.createElement("span"); t.className = "ltok";
+    row.append(ll, a, m, r, t);
+    row.title = `layer ${l + 1} — click for its attention`;
+    row.onclick = () => selectLayer(l);
+    holder.appendChild(row);
+    archRows[l] = {row, a, m, r, t};
+  }
+}
+function relColor(v, base, l) {
+  base[l] = (base[l] == null ? v : base[l] * 0.98 + v * 0.02);
+  return color((v / (base[l] || 1) - 0.7) / 0.9);
+}
+function updateArch(norms, attn, mlp, lensRow, emitted) {
+  if (!archRows.length) buildArch(norms.length);
+  if (!archBase) archBase = {a: [], m: []};
+  for (let l = 0; l < norms.length; l++) {
+    const rowEls = archRows[l];
+    if (!rowEls) continue;
+    if (attn && attn[l] != null) rowEls.a.style.background = relColor(attn[l], archBase.a, l);
+    if (mlp && mlp[l] != null) rowEls.m.style.background = relColor(mlp[l], archBase.m, l);
+    rowEls.r.style.background = color((norms[l] / (baseline[l] || 1) - 0.7) / 0.9);
+    if (lensRow) {
+      const top = lensRow[l][0];
+      rowEls.t.textContent = dispTok(top.t);
+      if (top.t === emitted) { rowEls.t.style.color = "var(--live)"; }
+      else { rowEls.t.style.color = `rgba(233,238,245,${(0.2 + top.p * 0.7).toFixed(2)})`; }
+    }
+  }
+}
+function selectLayer(l) {
+  selectedLayer = l;
+  archRows.forEach((r, i) => r && r.row.classList.toggle("sel", i === l));
+  document.getElementById("tab-attn").textContent = `attention · L${l + 1}`;
+  document.getElementById("tab-heads").textContent = `heads · L${l + 1}`;
+  if (activeTab !== "heads") switchTab("attn");
+  refreshActivePanel();
+}
+document.getElementById("node-lmhead").onclick = () => switchTab("lens");
+
+// ---------- tabs ----------
+let activeTab = "act";
+function switchTab(p) {
+  activeTab = p;
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x.dataset.p === p));
+  document.querySelectorAll(".panel").forEach(x => x.classList.remove("on"));
+  document.getElementById("p-" + p).classList.add("on");
+  refreshActivePanel();
+}
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => switchTab(b.dataset.p));
+
+function refreshActivePanel() {
+  if (activeTab === "act") draw();
+  else if (activeTab === "attn") refreshAttn();
+  else if (activeTab === "heads") refreshHeads();
+  else if (activeTab === "lens") refreshLens();
+}
+setInterval(() => {
+  if (document.hidden || !generating || activeTab === "act") return;
+  refreshActivePanel();
+}, 3000);
+
+function b64u8(s) {
+  const b = atob(s), a = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
+  return a;
+}
+
+// ---------- attention map (mean over heads, whole generation, one layer) ----------
+const attnCanvas = document.getElementById("attncanvas");
+let lastAttn = null;   // {rows: Uint8Array[], nPrompt, layer}
+let lastEntropy = null;
+
+let attnRange = "focus";   // "focus" = last 1k of prompt + answer · "all" = everything
+let genMeta = null;        // /gen snapshot for token labels, refetched per generation
+
+async function refreshAttn() {
+  if (selectedLayer == null) return;
+  const layer = selectedLayer;
+  const since = lastAttn && lastAttn.layer === layer && lastAttn.id ? lastAttn.rows.length : 0;
+  const r = await fetch(`/gen/attention?layer=${layer}&since=${since}`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) return;
+  if (since && lastAttn && lastAttn.id === r.id) {
+    lastAttn.rows.push(...r.rows.map(b64u8));   // incremental: only new steps travel
+  } else {
+    lastAttn = {rows: r.rows.map(b64u8), nPrompt: r.n_prompt, layer, id: r.id};
+  }
+  if (!lastAttn.rows.length) return;
+  if (!genMeta || genMeta.id !== r.id) {
+    genMeta = await fetch("/gen").then(x => x.ok ? x.json() : null).catch(() => null);
+  }
+  drawAttnMap();
+  drawAttnTop();
+  const e = lastEntropy && lastEntropy[layer] != null ? ` · focus entropy ${lastEntropy[layer].toFixed(2)}` : "";
+  document.getElementById("attninfo").textContent =
+    `layer ${layer + 1} · ${lastAttn.rows.length} answer steps · seq ${lastAttn.rows[lastAttn.rows.length - 1].length}${e}`;
+}
+
+function tokAt(pos) {
+  if (!genMeta) return null;
+  if (pos < genMeta.n_prompt) {
+    const i = pos - genMeta.prompt_offset;
+    return i >= 0 ? genMeta.prompt_tokens[i] : null;   // very long prompts: only the tail is labeled
+  }
+  const k = pos - genMeta.n_prompt;
+  return allTokens[k] ?? genMeta.tokens[k - 1] ?? null;
+}
+
+function drawAttnMap() {
+  if (!lastAttn || !lastAttn.rows.length) return;
+  const {rows, nPrompt} = lastAttn;
+  const seqMax = rows[rows.length - 1].length;
+  const startX = attnRange === "all" ? 0 : Math.max(0, nPrompt - 1024);
+  const span = seqMax - startX;
+  const W = attnCanvas.width = attnCanvas.clientWidth * devicePixelRatio;
+  const H = attnCanvas.height = attnCanvas.clientHeight * devicePixelRatio;
+  const cols = Math.max(1, Math.min(span, Math.floor(W)));
+  const off = document.createElement("canvas");
+  off.width = cols; off.height = rows.length;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(cols, rows.length);
+  for (let y = 0; y < rows.length; y++) {
+    const row = rows[y];
+    let rmax = 1;
+    for (let x = startX; x < row.length; x++) if (row[x] > rmax) rmax = row[x];
+    for (let b = 0; b < cols; b++) {
+      // max-pool each pixel bucket — averaging washes sharp attention spikes to black
+      const x0 = startX + Math.floor(b * span / cols);
+      let x1 = startX + Math.floor((b + 1) * span / cols);
+      if (x1 <= x0) x1 = x0 + 1;
+      let v = 0;
+      for (let x = x0; x < x1 && x < row.length; x++) if (row[x] > v) v = row[x];
+      const c = LUT[Math.min(255, Math.round(Math.sqrt(v / rmax) * 255))];
+      const p = (y * cols + b) * 4;
+      img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  const actx = attnCanvas.getContext("2d");
+  actx.imageSmoothingEnabled = false;
+  actx.clearRect(0, 0, W, H);
+  actx.drawImage(off, 0, 0, W, H);
+  lastAttn.view = {startX, span};
+  if (nPrompt >= startX) {
+    const bx = (nPrompt - startX) / span * W;   // prompt / answer boundary
+    actx.strokeStyle = "rgba(233,238,245,.6)"; actx.setLineDash([4, 4]);
+    actx.beginPath(); actx.moveTo(bx, 0); actx.lineTo(bx, H); actx.stroke(); actx.setLineDash([]);
   }
 }
 
+function escHtml(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+function drawAttnTop() {
+  const el = document.getElementById("attntop");
+  if (!lastAttn || !lastAttn.rows.length) { el.textContent = ""; return; }
+  const row = lastAttn.rows[lastAttn.rows.length - 1];
+  const idx = [...row.keys()].sort((a, b) => row[b] - row[a]).slice(0, 8).filter(i => row[i] > 2);
+  el.innerHTML = "reading now → " + (idx.map(i => {
+    const t = tokAt(i);
+    const label = t != null ? escHtml(JSON.stringify(t)) : `pos ${i}`;
+    const side = i >= lastAttn.nPrompt ? "·ans" : "";
+    return `<span title="position ${i}">${label} <i>${(row[i] / 255).toFixed(2)}${side}</i></span>`;
+  }).join(" ") || "<span>nothing above noise</span>");
+}
+document.querySelectorAll(".rbtn").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".rbtn").forEach(x => x.classList.toggle("on", x === b));
+  attnRange = b.dataset.r;
+  drawAttnMap(); drawAttnTop();
+});
+
+// ---------- per-head detail (newest token, one layer) ----------
+const headsCanvas = document.getElementById("headscanvas");
+let lastHeadEntropy = null;   // per-layer array of per-head entropies (from ws)
+const HEAD_GUTTER = 74;
+
+async function refreshHeads() {
+  if (selectedLayer == null) return;
+  const layer = selectedLayer;
+  const r = await fetch(`/gen/heads?layer=${layer}`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) return;
+  document.getElementById("headsinfo").textContent = `layer ${layer + 1} · ${r.heads} heads · seq ${r.seq}`;
+  const data = b64u8(r.data), heads = r.heads, seq = r.seq;
+  const W = headsCanvas.width = headsCanvas.clientWidth * devicePixelRatio;
+  const H = headsCanvas.height = headsCanvas.clientHeight * devicePixelRatio;
+  const hctx = headsCanvas.getContext("2d");
+  hctx.clearRect(0, 0, W, H);
+  const g = HEAD_GUTTER * devicePixelRatio, rh = H / heads;
+  const off = document.createElement("canvas");
+  off.width = seq; off.height = heads;
+  const octx = off.getContext("2d");
+  const img = octx.createImageData(seq, heads);
+  for (let h = 0; h < heads; h++) {
+    let mx = 1;
+    for (let x = 0; x < seq; x++) if (data[h * seq + x] > mx) mx = data[h * seq + x];
+    for (let x = 0; x < seq; x++) {
+      const c = LUT[Math.min(255, Math.round(data[h * seq + x] / mx * 255))];
+      const p = (h * seq + x) * 4;
+      img.data[p] = c[0]; img.data[p + 1] = c[1]; img.data[p + 2] = c[2]; img.data[p + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  hctx.imageSmoothingEnabled = seq > W - g;
+  hctx.drawImage(off, g, 0, W - g, H);
+  hctx.font = `${10 * devicePixelRatio}px ${getComputedStyle(document.body).fontFamily}`;
+  const ent = lastHeadEntropy && lastHeadEntropy[layer];
+  for (let h = 0; h < heads; h++) {
+    hctx.fillStyle = "#8fa0b5";
+    const label = `h${h}` + (ent && ent[h] != null ? ` ${ent[h].toFixed(2)}` : "");
+    hctx.fillText(label, 4 * devicePixelRatio, (h + 0.72) * rh);
+    hctx.strokeStyle = "rgba(29,43,66,.8)";
+    hctx.beginPath(); hctx.moveTo(g, (h + 1) * rh); hctx.lineTo(W, (h + 1) * rh); hctx.stroke();
+  }
+}
+
+// ---------- logit lens ----------
+const lensGrid = document.getElementById("lensgrid");
+const LENS_MAXCOLS = 28;
+function dispTok(t) {
+  const s = (t || "").replace(/\n/g, "⏎");
+  return s.trim() === "" ? "·" : s;
+}
+function ensureLensAxis(n) {
+  if (lensGrid.querySelector(".axis")) return;
+  const col = document.createElement("div"); col.className = "lenscol axis";
+  const head = document.createElement("div"); head.className = "lenshead"; head.textContent = "layer";
+  col.appendChild(head);
+  for (let l = n; l >= 1; l--) {
+    const cell = document.createElement("div"); cell.className = "lenscell";
+    cell.textContent = (l === 1 || l === n || l % 4 === 0) ? l : "";
+    col.appendChild(cell);
+  }
+  lensGrid.appendChild(col);
+}
+let lensHist = [];       // per answer token: its lens rows (for hover on the answer text)
+function emergeDepth(lens, emitted) {
+  let e = null;
+  for (let l = lens.length - 1; l >= 0; l--) {
+    if (lens[l][0].t === emitted) e = l + 1; else break;
+  }
+  return e;
+}
+function paintDepth(sp, lens, emitted) {
+  if (!lens) return;
+  const e = emergeDepth(lens, emitted);
+  if (e == null) { sp.style.background = "rgba(229,99,107,.28)"; return; }   // never settled
+  const f = e / lens.length;   // 1 = decided at the very last layer
+  const a = Math.max(0, f - 0.5) * 0.9;   // first-half deciders stay clean
+  if (a > 0.01) sp.style.background = `rgba(232,180,90,${a.toFixed(3)})`;
+}
+function probBar(p) { return "█".repeat(Math.round(p * 8)) || "▏"; }
+function lensTipText(entries, header) {
+  return header + "\n" + entries.map(e =>
+    `${probBar(e.p).padEnd(8)} ${(e.p * 100).toFixed(0).padStart(3)}%  ${JSON.stringify(e.t)}`).join("\n");
+}
+
+let lensStale = false;   // cleared lazily: a failed/retried gen must not blank the view
+function addLensCol(lens, emitted) {
+  if (lensStale) { lensGrid.innerHTML = ""; lensStale = false; }
+  ensureLensAxis(lens.length);
+  // crystallization depth: lowest layer from which the top-1 stays the emitted token
+  let emerge = null;
+  for (let l = lens.length - 1; l >= 0; l--) {
+    if (lens[l][0].t === emitted) emerge = l + 1; else break;
+  }
+  const col = document.createElement("div"); col.className = "lenscol";
+  const head = document.createElement("div"); head.className = "lenshead";
+  const tokSpan = document.createElement("span"); tokSpan.textContent = dispTok(emitted);
+  head.appendChild(tokSpan); head.title = JSON.stringify(emitted);
+  const depth = document.createElement("small");
+  depth.textContent = emerge ? `L${emerge}` : "—";
+  head.appendChild(depth);
+  col.appendChild(head);
+  for (let l = lens.length - 1; l >= 0; l--) {
+    const cell = document.createElement("div"); cell.className = "lenscell";
+    const top = lens[l][0];
+    cell.textContent = dispTok(top.t);
+    if (top.t === emitted) {   // the green wave of certainty
+      cell.style.background = `rgba(61,189,125,${(0.12 + top.p * 0.78).toFixed(3)})`;
+      if (top.p > 0.5) cell.style.color = "#0b1810";
+      else cell.style.color = "#bfe8d2";
+    } else {
+      cell.style.background = `rgba(232,180,90,${(top.p * 0.45).toFixed(3)})`;
+    }
+    cell._tip = lensTipText(lens[l], `layer ${l + 1} would say:`);
+    col.appendChild(cell);
+  }
+  lensGrid.appendChild(col);
+  while (lensGrid.children.length > LENS_MAXCOLS + 1) lensGrid.removeChild(lensGrid.children[1]);
+  lensGrid.scrollLeft = lensGrid.scrollWidth;
+}
+
+async function refreshLens() {
+  if (lensGrid.querySelectorAll(".lenscol:not(.axis)").length) return;   // live stream filled it
+  const g = await fetch("/gen").then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!g || !g.lens || !g.lens.length) return;
+  const start = Math.max(0, g.lens.length - LENS_MAXCOLS);
+  for (let i = start; i < g.lens.length; i++) addLensCol(g.lens[i], g.tokens[i]);
+}
+
+// ---------- backfill for late joiners: repaint the last generation ----------
+async function backfill() {
+  const g = await fetch("/gen").then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!g || !g.norms.length) return;
+  cols = g.norms; tokens = g.tokens; allTokens = g.tokens;
+  const n = g.norms[0].length;
+  baseline = Array.from({length: n}, (_, l) =>
+    g.norms.reduce((s, row) => s + row[l], 0) / g.norms.length);
+  textEl.textContent = "";
+  lensHist = (g.lens || []).slice();
+  g.tokens.forEach((t, i) => {
+    const sp = document.createElement("span");
+    sp.className = "tok"; sp.textContent = t; sp.dataset.k = i;
+    paintDepth(sp, lensHist[i], t);
+    textEl.appendChild(sp);
+  });
+  draw();
+  if (g.lens.length) {
+    lensOn = true;
+    updateArch(g.norms[g.norms.length - 1], null, null, g.lens[g.lens.length - 1],
+               g.tokens[g.tokens.length - 1]);
+  } else {
+    updateArch(g.norms[g.norms.length - 1], null, null, null, null);
+  }
+  const tag = g.tags && g.tags.agent ? `${g.tags.agent}${g.tags.phase ? "/" + g.tags.phase : ""} · ` : "";
+  stxt.textContent = `${tag}last gen · ${g.tokens.length} tok`;
+  document.getElementById("tabnote").textContent =
+    g.steer ? `steered: ${g.steer.name} ${g.steer.strength} @ L${g.steer.layers[0]}–${g.steer.layers[1]}` : "";
+}
+
+// ---------- websocket ----------
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => { stxt.textContent = "ready"; };
@@ -189,33 +653,55 @@ function connect() {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
-      cols = []; tokens = []; textEl.textContent = "";
+      cols = []; tokens = []; allTokens = []; lensHist = []; textEl.textContent = "";
+      lastAttn = null; lensStale = true;
+      generating = true;
       dot.classList.add("live");
-      stxt.textContent = `generating · prompt ${msg.prompt_tokens} tok`;
+      const tag = msg.tags && msg.tags.agent ? ` · ${msg.tags.agent}${msg.tags.phase ? "/" + msg.tags.phase : ""}` : "";
+      stxt.textContent = `generating · prompt ${msg.prompt_tokens} tok${tag}`;
+      document.getElementById("tabnote").textContent =
+        msg.steer ? `steered: ${msg.steer.name} ${msg.steer.strength} @ L${msg.steer.layers[0]}–${msg.steer.layers[1]}` : "";
     } else if (msg.type === "token") {
-      textEl.textContent += msg.text;
+      const kIdx = allTokens.length;
+      allTokens.push(msg.text);
+      lensHist[kIdx] = msg.lens || null;
+      const sp = document.createElement("span");
+      sp.className = "tok"; sp.textContent = msg.text; sp.dataset.k = kIdx;
+      paintDepth(sp, msg.lens, msg.text);
+      textEl.appendChild(sp);
       textEl.scrollTop = textEl.scrollHeight;
+      if (msg.lens) { lensOn = true; addLensCol(msg.lens, msg.text); }
+      if (msg.head_entropy) lastHeadEntropy = msg.head_entropy;
+      if (msg.attn_entropy) lastEntropy = msg.attn_entropy;
       if (!msg.norms.length) return;
       tokens.push(msg.text);
       if (!baseline) baseline = msg.norms.slice();
       else baseline = baseline.map((b, i) => b * 0.98 + msg.norms[i] * 0.02);
       cols.push(msg.norms);
-      drawSpine(msg.norms);
-      draw();
+      updateArch(msg.norms, msg.attn_norm, msg.mlp_norm, msg.lens, msg.text);
+      if (activeTab === "act") scheduleDraw();
     } else if (msg.type === "done") {
+      generating = false;
       dot.classList.remove("live");
       stxt.textContent = `done · ${msg.completion_tokens} tok`;
+      refreshActivePanel();   // final, complete picture
     }
   };
 }
 connect();
 
-// model info + layer marks
+// model info + architecture + defaults
 fetch("/info").then(r => r.json()).then(i => {
   document.getElementById("modelinfo").innerHTML =
-    `<b>${i.model}</b> · ${i.params_b} B params · ${i.n_layers} layers · hidden ${i.hidden_size} · vocab ${(i.vocab_size/1000).toFixed(0)}k`;
-  const marks = [1, Math.round(i.n_layers/4), Math.round(i.n_layers/2), Math.round(3*i.n_layers/4), i.n_layers];
-  document.getElementById("layermarks").innerHTML = marks.map(n => `<span>${n}</span>`).join("");
+    `<b>${i.model}</b> · ${i.params_b} B params · ${i.n_layers} layers · ${i.n_heads} heads · hidden ${i.hidden_size} · vocab ${(i.vocab_size/1000).toFixed(0)}k` +
+    (i.lens ? " · lens on" : " · lens off");
+  nLayersTotal = i.n_layers || 36;
+  lensOn = !!i.lens;
+  vizOn = i.viz !== false; paintViz();
+  buildArch(nLayersTotal);
+  if (!lrangeEl.value) lrangeEl.value =
+    `${Math.round(nLayersTotal / 3)}-${Math.round(2 * nLayersTotal / 3)}`;
+  backfill();
 }).catch(() => {});
 
 // built-in chat
@@ -234,8 +720,14 @@ async function send() {
 document.getElementById("send").onclick = send;
 msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 
-// hover tooltip
+// hover tooltips
 const tip = document.getElementById("tip");
+function showTip(ev, text) {
+  tip.textContent = text;
+  tip.style.left = (ev.clientX + 14) + "px";
+  tip.style.top = (ev.clientY + 14) + "px";
+  tip.style.display = "block";
+}
 canvas.addEventListener("mousemove", (ev) => {
   if (!cols.length) { tip.style.display = "none"; return; }
   const rect = canvas.getBoundingClientRect();
@@ -247,12 +739,72 @@ canvas.addEventListener("mousemove", (ev) => {
   const l = nLayers - 1 - Math.floor((ev.clientY - rect.top) * devicePixelRatio / (H / nLayers));
   if (x < 0 || x >= cols.length || l < 0 || l >= nLayers) { tip.style.display = "none"; return; }
   const rel = cols[x][l] / (baseline[l] || 1);
-  tip.textContent = `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · layer ${l + 1} · ${rel.toFixed(2)}× avg`;
-  tip.style.left = (ev.clientX + 14) + "px";
-  tip.style.top = (ev.clientY + 14) + "px";
-  tip.style.display = "block";
+  showTip(ev, `token ${x}${tokens[x] ? " " + JSON.stringify(tokens[x]) : ""} · layer ${l + 1} · ${rel.toFixed(2)}× avg`);
 });
 canvas.addEventListener("mouseleave", () => tip.style.display = "none");
+
+// hover any word of the answer → what the model almost said + where it decided
+textEl.addEventListener("mousemove", (ev) => {
+  const t = ev.target;
+  const lens = t.dataset && t.dataset.k != null ? lensHist[+t.dataset.k] : null;
+  if (!lens) { tip.style.display = "none"; return; }
+  const emitted = allTokens[+t.dataset.k];
+  let emerge = null;
+  for (let l = lens.length - 1; l >= 0; l--) {
+    if (lens[l][0].t === emitted) emerge = l + 1; else break;
+  }
+  showTip(ev, lensTipText(lens[lens.length - 1], "almost said:") +
+    (emerge ? `\n─ decided at layer ${emerge}/${lens.length}` : "\n─ never settled before lm_head"));
+});
+textEl.addEventListener("mouseleave", () => tip.style.display = "none");
+
+// click any word of the answer → which positions fed it (attention averaged over all layers)
+textEl.addEventListener("click", async (ev) => {
+  const t = ev.target;
+  if (!t.dataset || t.dataset.k == null) return;
+  const k = +t.dataset.k;
+  const srcEl = document.getElementById("sources");
+  srcEl.classList.add("on");
+  if (k === 0) {
+    srcEl.textContent = "the first token comes straight out of prefill — capture starts with the second";
+    return;
+  }
+  srcEl.textContent = "…";
+  const r = await fetch(`/gen/sources?step=${k - 1}`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r || !r.sources.length) { srcEl.textContent = "no attention captured for this token"; return; }
+  textEl.querySelectorAll(".tok.src").forEach(x => x.classList.remove("src"));
+  t.classList.add("src");
+  srcEl.innerHTML = `while writing <b>${escHtml(JSON.stringify(allTokens[k]))}</b> it was reading → ` +
+    r.sources.map(s => {
+      const mid = s.token != null ? `<b>${escHtml(s.token)}</b>` : `pos ${s.pos}`;
+      return `<span class="chip" title="pos ${s.pos} (${s.side}) · weight ${s.w}">` +
+             `${escHtml(s.before || "")}${mid}${escHtml(s.after || "")} <i>${s.w.toFixed(2)}</i></span>`;
+    }).join(" ");
+});
+
+// rich hover for lens cells (probability bars instead of slow native titles)
+lensGrid.addEventListener("mousemove", (ev) => {
+  const c = ev.target;
+  if (!c._tip) { tip.style.display = "none"; return; }
+  showTip(ev, c._tip);
+});
+lensGrid.addEventListener("mouseleave", () => tip.style.display = "none");
+
+attnCanvas.addEventListener("mousemove", (ev) => {
+  if (!lastAttn || !lastAttn.rows.length) { tip.style.display = "none"; return; }
+  const rect = attnCanvas.getBoundingClientRect();
+  const {rows, nPrompt, view} = lastAttn;
+  const startX = view ? view.startX : 0;
+  const span = view ? view.span : rows[rows.length - 1].length;
+  const y = Math.floor((ev.clientY - rect.top) / rect.height * rows.length);
+  const x = startX + Math.floor((ev.clientX - rect.left) / rect.width * span);
+  if (y < 0 || y >= rows.length || x < 0 || x >= rows[y].length) { tip.style.display = "none"; return; }
+  const side = x < nPrompt ? "prompt" : "answer";
+  const t = tokAt(x);
+  const tok = t != null ? ` ${JSON.stringify(t)}` : "";
+  showTip(ev, `step ${y + 1} looks at pos ${x} (${side}${tok}) · w ${(rows[y][x] / 255).toFixed(3)}`);
+});
+attnCanvas.addEventListener("mouseleave", () => tip.style.display = "none");
 
 // PNG snapshot
 document.getElementById("snap").onclick = () => {
@@ -301,13 +853,7 @@ async function initSteer() {
     if (r.steer.layers) lrangeEl.value = `${r.steer.layers[0]}-${r.steer.layers[1]}`;
   }
 }
-let nLayersTotal = 36;
 const lrangeEl = document.getElementById("lrange");
-fetch("/info").then(r => r.json()).then(i => {
-  nLayersTotal = i.n_layers || 36;
-  if (!lrangeEl.value) lrangeEl.value =
-    `${Math.round(nLayersTotal / 3)}-${Math.round(2 * nLayersTotal / 3)}`;
-});
 function steeredLayers() {
   const m = lrangeEl.value.match(/^\s*(\d+)\s*[-–]\s*(\d+)\s*$/);
   if (!m) return [Math.round(nLayersTotal / 3), Math.round(2 * nLayersTotal / 3)];
@@ -324,4 +870,46 @@ strengthEl.addEventListener("change", pushSteer);
 dirSel.addEventListener("change", pushSteer);
 lrangeEl.addEventListener("change", pushSteer);
 initSteer();
+
+// steering-policy toggle (tag-matched rules live on the server; this only pauses them)
+const polBtn = document.getElementById("polbtn");
+let policyOn = false;
+function paintPolicy(r) {
+  policyOn = !!r.enabled;
+  polBtn.textContent = `policy ${policyOn ? "on" : "off"} · ${r.policy.length} rule${r.policy.length > 1 ? "s" : ""}`;
+  polBtn.classList.toggle("pol-on", policyOn);
+  polBtn.title = r.policy.map(p =>
+    `${Object.entries(p.match || {}).map(([k, v]) => `${k}=${v}`).join(" ")} → ` +
+    `${p.steer.name} @ ${p.steer.strength} L${p.steer.layer_from}–${p.steer.layer_to}`
+  ).join("\n") || "no rules";
+}
+async function initPolicy() {
+  const r = await fetch("/policy").then(r => r.json()).catch(() => null);
+  if (!r || !r.policy.length) return;
+  paintPolicy(r);
+  polBtn.style.display = "";
+}
+polBtn.onclick = async () => {
+  const r = await fetch("/policy", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled: !policyOn})}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r) paintPolicy(r);
+};
+initPolicy();
+
+// scope toggle: capture signals every token (slow, all-seeing) vs dark mode (just generate)
+const vizBtn = document.getElementById("vizbtn");
+let vizOn = true;
+function paintViz() {
+  vizBtn.textContent = vizOn ? "◉ scope on" : "○ scope off";
+  vizBtn.classList.toggle("pol-on", vizOn);
+  vizBtn.title = vizOn
+    ? "capturing signals on every token (slower) — click to go dark & fast"
+    : "dark mode: generating without capture — click to see inside again";
+}
+vizBtn.onclick = async () => {
+  const r = await fetch("/viz", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({on: !vizOn})}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r) { vizOn = !!r.on; paintViz(); }
+};
+paintViz();
 </script>
