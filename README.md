@@ -146,6 +146,28 @@ per-layer states are consumed the moment they're produced. `transformers`
 exposes `output_hidden_states` for every architecture with one flag. That's
 the trade: brainscope is slower, but it sees everything, for any model.
 
+## Standing on shoulders
+
+The instruments here implement or adapt published techniques — the credit
+belongs with the originals:
+
+- **Logit lens** — nostalgebraist, *interpreting GPT: the logit lens*
+  (LessWrong, 2020). Brainscope's per-layer readout is the raw lens; for the
+  cleaned-up successor see Belrose et al., *Eliciting Latent Predictions from
+  Transformers with the Tuned Lens* (arXiv:2303.08112).
+- **Concept-before-language** — the multilingual soup you'll see mid-stack is
+  the phenomenon studied in Wendler et al., *Do Llamas Work in English? On the
+  Latent Language of Multilingual Transformers* (arXiv:2402.10588).
+- **Activation steering** — adding a direction to the residual stream follows
+  Turner et al., *Activation Addition* (arXiv:2308.10248); the contrast-pair
+  extraction in `hidden_directions.py` is in the spirit of Zou et al.,
+  *Representation Engineering* (arXiv:2310.01405) and Rimsky et al.,
+  *Steering Llama 2 via Contrastive Activation Addition* (arXiv:2312.06681).
+- **Attention aggregation** — the "sources" view averages attention across
+  layers; for the principled version of cross-layer attention flow see
+  Abnar & Zuidema, *Quantifying Attention Flow in Transformers*
+  (arXiv:2005.00928).
+
 ## License
 
 MIT © Kateřina Fajmanová
