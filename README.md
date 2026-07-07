@@ -41,12 +41,30 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 
 ## What am I looking at?
 
-Left: a live cross-section of the model - the prompt enters at the bottom
-(embedding), the spine of decoder layers lights up as each token passes
-through, the next word exits at the top (lm_head). Right: the same spine
-unrolled over time - one column per generated token, one row per layer, color
-= how loudly that layer works on that token relative to its own average.
-Hover for details, ● record exports a WebM, PNG saves a snapshot.
+Left: the model itself - the prompt enters at the bottom (embedding), one
+**clickable row per decoder layer** (attn | mlp | residual cells glowing as
+the token passes through, plus what that layer would emit right now), and the
+next word exits at the top (lm_head). Click a layer to drill in. On the
+right, four instruments:
+
+- **activity over time** - the spine unrolled: one column per generated
+  token, one row per layer, color = how loudly that layer works on that
+  token relative to its own average.
+- **attention** - for the clicked layer: rows = answer tokens, columns =
+  every position it looks back at, dashed line = the prompt/answer boundary.
+  **heads** splits the newest token per attention head.
+- **logit lens** (click lm_head) - every layer's next-token readout: watch
+  the answer crystallize with depth. Hover a cell for the top-5 candidates
+  with probabilities; click to pin the tooltip for screenshots.
+- **the answer text is an instrument too** - each word is tinted by the
+  layer where it was decided (clean = early, amber = late, red = never
+  settled before lm_head), hovering shows what the model almost said
+  instead, and clicking a word lists the prompt positions that fed it.
+
+The ◉ scope button pauses all capture when you just want fast generation;
+● record exports a WebM of the activity view, PNG saves a snapshot.
+
+An example of what the lens view can catch:
 
 ![Logit lens: the meaning decodes mid-stack in English and Chinese; the Czech surface form assembles only in the last few layers](docs/img/lens-concept-before-language.png)
 
