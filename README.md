@@ -48,6 +48,15 @@ unrolled over time - one column per generated token, one row per layer, color
 = how loudly that layer works on that token relative to its own average.
 Hover for details, ● record exports a WebM, PNG saves a snapshot.
 
+![Logit lens: the meaning decodes mid-stack in English and Chinese; the Czech surface form assembles only in the last few layers](docs/img/lens-concept-before-language.png)
+
+*Qwen3-4B writing the Czech word "zážitkům" (experiences), fragment by
+fragment. Mid-stack readouts decode as the meaning — English and Chinese —
+while the Czech surface form assembles only in the last few layers. No
+anthropomorphism required: it's the geometry of multilingual representations,
+studied properly in Wendler et al. 2024 (arXiv:2402.10588). Readouts are a
+raw logit lens, so mid-stack tokens are approximate.*
+
 ## Steering
 
 Extract a direction from contrast pairs, load it, and drive it live from
