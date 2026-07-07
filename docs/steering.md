@@ -81,3 +81,13 @@ brainscope --model qwen3-4b --directions dirs.json
 curl -X POST localhost:8010/steer \
     -d '{"name": "my-direction", "strength": 6, "layer_from": 20, "layer_to": 22}'
 ```
+
+## References
+
+The method here is activation addition (Turner et al., *Activation
+Addition: Steering Language Models Without Optimization*, arXiv:2308.10248)
+with contrast-pair, PCA-per-layer extraction in the spirit of representation
+engineering (Zou et al., arXiv:2310.01405) and contrastive activation
+addition (Rimsky et al., arXiv:2312.06681). The layer-depth intuitions in
+the lessons match what those papers report; the over-steering failure modes
+are our own scars.

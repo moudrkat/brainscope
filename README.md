@@ -50,9 +50,12 @@ Hover for details, ● record exports a WebM, PNG saves a snapshot.
 
 ## Steering
 
-Extract a direction from contrast pairs (ActAdd/repeng style), load it, and
-drive it live from the header - activation addition on real traffic. Two
-extractors ship with brainscope:
+Extract a direction from contrast pairs, load it, and drive it live from
+the header - activation addition (Turner et al., arXiv:2308.10248) on real
+traffic, with representation-engineering-style extraction (Zou et al.,
+arXiv:2310.01405; Rimsky et al., arXiv:2312.06681 - see
+[Standing on shoulders](#standing-on-shoulders)). Two extractors ship with
+brainscope:
 
 - `brainscope.extract` - quick mean-difference at one layer you pick. Fine
   for strong directions (language switching works beautifully).
