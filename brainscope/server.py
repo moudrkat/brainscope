@@ -174,6 +174,8 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
 
     def make_hook(row):
         def hook(_module, _inp, out):
+            if state.get("steer_mute"):   # inside a tool call: syntax over persona
+                return out
             hidden = out[0] if isinstance(out, tuple) else out
             hidden = hidden + strength * row.to(hidden.dtype)
             return (hidden, *out[1:]) if isinstance(out, tuple) else hidden
@@ -367,8 +369,10 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             forced_prefix += f"\"{forced}\", \"arguments\": {{"
         prompt += forced_prefix
 
+    state["steer_mute"] = bool(forced_prefix)   # a forced call starts muted
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
+    running = forced_prefix   # decoded-so-far text, drives the tool-call mute
 
     n_prompt = ids.shape[1]
     prompt_ids = ids[0].tolist()[-4096:]  # axis labels; very long prompts keep the tail
@@ -419,6 +423,11 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         else:
             next_id = logits.argmax().reshape(1)
         piece = tok.decode(next_id)
+        # steering is muted while the model writes a tool call — a persona
+        # vector strong enough to matter corrupts strict JSON syntax, so the
+        # persona colours the prose and the calls stay well-formed
+        running += piece
+        state["steer_mute"] = running.count("<tool_call>") > running.count("</tool_call>")
         payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
         if out.hidden_states is not None:
             norms, cos = _layer_signals(out.hidden_states, state["directions"])
@@ -445,6 +454,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
 
     text = forced_prefix + tok.decode(generated, skip_special_tokens=False)
     gen["done"] = True
+    state["steer_mute"] = False
     notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated)})
     return text
 
