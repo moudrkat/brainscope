@@ -7,3 +7,9 @@ dependencies = ["fastapi", "uvicorn", "transformers", "torch", "accelerate", "bi
 
 [project.scripts]
 brainscope = "brainscope.server:main"
+
+[tool.setuptools]
+packages = ["brainscope"]
+
+[tool.setuptools.package-data]
+brainscope = ["static/*"]

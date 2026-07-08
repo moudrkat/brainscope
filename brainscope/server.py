@@ -36,7 +36,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
-STATIC = Path(__file__).parent.parent / "static"
+STATIC = Path(__file__).parent / "static"
 
 # friendly shortcuts -> HF ids (extend freely)
 PRESETS = {
