@@ -5,7 +5,7 @@ description = "Watch your model think while your app talks to it"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
-dependencies = ["fastapi", "uvicorn", "transformers", "torch", "accelerate", "bitsandbytes"]
+dependencies = ["fastapi", "uvicorn[standard]", "transformers", "torch", "accelerate", "bitsandbytes"]
 
 [project.urls]
 Homepage = "https://github.com/moudrkat/brainscope"

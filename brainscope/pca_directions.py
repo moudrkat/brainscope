@@ -150,10 +150,15 @@ def main() -> None:
     print(f"saved direction '{args.name}' (layer {best['layer']}) -> {args.out}")
 
     meta_out = args.meta_out or args.out.with_suffix(".meta.json")
-    meta_out.write_text(json.dumps(
-        {"name": args.name, "model": model_id, "n_pairs": len(pairs),
-         "best_layer": best["layer"], "suggested_layers": [min(good), max(good)],
-         "table": table}, indent=2))
+    meta = {}
+    if meta_out.exists():
+        raw = json.loads(meta_out.read_text())
+        # legacy files held a single direction's object; keyed-by-name since then
+        meta = raw if isinstance(raw, dict) and "name" not in raw else {}
+    meta[args.name] = {"model": model_id, "n_pairs": len(pairs),
+                       "best_layer": best["layer"],
+                       "suggested_layers": [min(good), max(good)], "table": table}
+    meta_out.write_text(json.dumps(meta, indent=2))
     print(f"layer table -> {meta_out}")
 
 

@@ -49,7 +49,7 @@ PRESETS = {
 }
 
 app = FastAPI(title="brainscope")
-state: dict = {"model": None, "tokenizer": None, "directions": {}, "clients": set(),
+state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {}, "clients": set(),
                "loop": None, "device": "cpu", "model_name": "",
                "steer": None, "steer_handles": [], "policy": [], "policy_on": True,
                "gen": None, "probes": {"attn": {}, "mlp": {}}, "lens": False,
@@ -587,7 +587,8 @@ async def gen_sources(step: int = -1, top: int = 8):
 
 @app.get("/directions")
 async def directions():
-    return {"directions": sorted(state["directions"]), "steer": state["steer"]}
+    return {"directions": sorted(state["directions"]), "steer": state["steer"],
+            "meta": state["dir_meta"]}
 
 
 def _hidden_size() -> int:
@@ -615,11 +616,21 @@ def load_direction_dict(path: Path) -> dict:
     hidden = _hidden_size()
     manifest_path = path / "manifest.json"
     if manifest_path.exists():
-        src_model = json.loads(manifest_path.read_text()).get("model")
+        manifest = json.loads(manifest_path.read_text())
+        src_model = manifest.get("model")
         if src_model and src_model != state["model_name"]:
             print(f"brainscope: WARNING — direction dict was extracted on {src_model}, "
                   f"but the loaded model is {state['model_name']}; foreign directions "
                   "produce noise, not steering", flush=True)
+        # optional per-direction steering presets in the manifest
+        for e in manifest.get("directions", []):
+            hint = {}
+            if e.get("recommended_layer") is not None:
+                hint["layer_from"] = hint["layer_to"] = int(e["recommended_layer"])
+            if e.get("recommended_alpha") is not None:
+                hint["strength"] = float(e["recommended_alpha"])
+            if hint:
+                state["dir_meta"][e["name"]] = hint
     dirs = {}
     for f in sorted(path.glob("*.pt")):
         t = torch.load(f, map_location="cpu", weights_only=True)
@@ -644,6 +655,10 @@ async def add_direction(body: dict):
         return JSONResponse({"error": f"vector rows must have {hidden} dims"},
                             status_code=400)
     state["directions"][name] = tensor.to(state["device"])
+    if isinstance(body.get("meta"), dict):   # optional steering preset
+        state["dir_meta"][name] = {k: body["meta"][k] for k in
+                                   ("strength", "layer_from", "layer_to")
+                                   if body["meta"].get(k) is not None}
     _persist_directions()
     return {"directions": sorted(state["directions"])}
 
@@ -653,6 +668,7 @@ async def delete_direction(name: str):
     if name not in state["directions"]:
         return JSONResponse({"error": "unknown direction"}, status_code=404)
     del state["directions"][name]
+    state["dir_meta"].pop(name, None)
     if state["steer"] and state["steer"]["name"] == name:
         apply_steering(None, 0, 0, -1)
     _persist_directions()
@@ -761,6 +777,16 @@ def main() -> None:
                 raw = json.loads(args.directions.read_text())
                 state["directions"] = {k: torch.tensor(v).float().to(state["device"])
                                        for k, v in raw.items()}
+            # pca_directions writes suggested layers next to the vector library
+            meta_path = args.directions.with_suffix(".meta.json")
+            if meta_path.exists():
+                raw = json.loads(meta_path.read_text())
+                if "name" in raw:   # legacy single-direction meta file
+                    raw = {raw["name"]: raw}
+                for k, m in raw.items():
+                    if k in state["directions"] and m.get("suggested_layers"):
+                        state["dir_meta"][k] = {"layer_from": m["suggested_layers"][0],
+                                                "layer_to": m["suggested_layers"][1]}
     if args.policy:
         state["policy_path"] = args.policy
         if args.policy.exists():

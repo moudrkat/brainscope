@@ -532,7 +532,6 @@ async function refreshHeads() {
 
 // ---------- logit lens ----------
 const lensGrid = document.getElementById("lensgrid");
-const LENS_MAXCOLS = 28;
 function dispTok(t) {
   const s = (t || "").replace(/\n/g, "⏎");
   return s.trim() === "" ? "·" : s;
@@ -602,17 +601,18 @@ function addLensCol(lens, emitted) {
     cell._tip = lensTipText(lens[l], `layer ${l + 1} would say:`);
     col.appendChild(cell);
   }
+  // full answer stays scrollable; only follow the stream if the user is
+  // already at the right edge (don't fight a hand that scrolled back)
+  const nearEnd = lensGrid.scrollLeft + lensGrid.clientWidth >= lensGrid.scrollWidth - 80;
   lensGrid.appendChild(col);
-  while (lensGrid.children.length > LENS_MAXCOLS + 1) lensGrid.removeChild(lensGrid.children[1]);
-  lensGrid.scrollLeft = lensGrid.scrollWidth;
+  if (nearEnd) lensGrid.scrollLeft = lensGrid.scrollWidth;
 }
 
 async function refreshLens() {
   if (lensGrid.querySelectorAll(".lenscol:not(.axis)").length) return;   // live stream filled it
   const g = await fetch("/gen").then(r => r.ok ? r.json() : null).catch(() => null);
   if (!g || !g.lens || !g.lens.length) return;
-  const start = Math.max(0, g.lens.length - LENS_MAXCOLS);
-  for (let i = start; i < g.lens.length; i++) addLensCol(g.lens[i], g.tokens[i]);
+  for (let i = 0; i < g.lens.length; i++) addLensCol(g.lens[i], g.tokens[i]);
 }
 
 // ---------- backfill for late joiners: repaint the last generation ----------
@@ -857,11 +857,14 @@ const steerbox = document.getElementById("steerbox");
 const dirSel = document.getElementById("dir");
 const strengthEl = document.getElementById("strength");
 const svalEl = document.getElementById("sval");
+let dirMeta = {};        // per-direction steering presets from the server
 async function initSteer() {
   const r = await fetch("/directions").then(r => r.json()).catch(() => null);
   if (!r || !r.directions.length) return;
+  dirMeta = r.meta || {};
   dirSel.innerHTML = r.directions.map(d => `<option>${d}</option>`).join("");
   steerbox.style.display = "flex";
+  applyPreset();
   if (r.steer) {
     dirSel.value = r.steer.name;
     strengthEl.value = r.steer.strength;
@@ -882,8 +885,14 @@ async function pushSteer() {
     body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value,
       layer_from: from, layer_to: to})});
 }
+function applyPreset() {   // extraction knows where the behaviour lives — prefill it
+  const m = dirMeta[dirSel.value];
+  if (!m) return;
+  if (m.layer_from != null) lrangeEl.value = `${m.layer_from}-${m.layer_to ?? m.layer_from}`;
+  if (m.strength != null) { strengthEl.value = m.strength; svalEl.textContent = (+m.strength).toFixed(1); }
+}
 strengthEl.addEventListener("change", pushSteer);
-dirSel.addEventListener("change", pushSteer);
+dirSel.addEventListener("change", () => { applyPreset(); pushSteer(); });
 lrangeEl.addEventListener("change", pushSteer);
 initSteer();
 
