@@ -303,7 +303,8 @@ _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel ag
 
 @torch.inference_mode()
 def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
-                          steering: dict | None = None, tags: dict | None = None):
+                          steering: dict | None = None, tags: dict | None = None,
+                          tool_choice=None):
     """Token-by-token generation, calling notify(payload) per token.
 
     `steering` scopes activation addition to THIS request only: it overrides
@@ -328,7 +329,7 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 active_steer = None
         try:
             return _generate(messages, tools, max_new_tokens, temperature, notify,
-                             active_steer, tags)
+                             active_steer, tags, tool_choice)
         finally:
             for h in request_handles:
                 h.remove()
@@ -343,10 +344,29 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
 
 
 def _generate(messages, tools, max_new_tokens, temperature, notify,
-              active_steer=None, tags=None):
+              active_steer=None, tags=None, tool_choice=None):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
+
+    # tool_choice enforcement without guided decoding: seed the generation with
+    # the opening of a tool call in the model's own format, so the only way to
+    # continue is to finish one ("required" picks the tool, a named choice
+    # forces it). The prefix is prepended back before parsing the tool call.
+    forced_prefix = ""
+    if tools and tool_choice and tool_choice not in ("none", "auto"):
+        forced = tool_choice.get("function", {}).get("name") \
+            if isinstance(tool_choice, dict) else None
+        tmpl = getattr(tok, "chat_template", "") or ""
+        forced_prefix = ("<tool_call>\n{\"name\": " if "<tool_call>" in tmpl else
+                         "```tool_call\n{\"name\": " if "```tool" in tmpl else
+                         "{\"name\": ")
+        if forced:
+            # the opening brace keeps arguments a JSON object (bare values
+            # like `"arguments": 3 * 7` would break the parse)
+            forced_prefix += f"\"{forced}\", \"arguments\": {{"
+        prompt += forced_prefix
+
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
 
@@ -423,7 +443,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         if int(next_id) == tok.eos_token_id:
             break
 
-    text = tok.decode(generated, skip_special_tokens=False)
+    text = forced_prefix + tok.decode(generated, skip_special_tokens=False)
     gen["done"] = True
     notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated)})
     return text
@@ -491,7 +511,7 @@ async def chat_completions(body: dict):
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
-        notify, steering, tags)
+        notify, steering, tags, body.get("tool_choice"))
     return JSONResponse(to_openai_response(text, state["model_name"]))
 
 

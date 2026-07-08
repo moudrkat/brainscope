@@ -191,7 +191,9 @@ curl -X POST localhost:8010/steer -d '{"stack": [
 
 Works when your app talks the **OpenAI chat-completions API** with
 **non-streaming** responses (`stream: true` not supported yet); tool calls
-are parsed in hermes/qwen, gemma-fenced and plain-JSON formats.
+are parsed in hermes/qwen, gemma-fenced and plain-JSON formats, and
+`tool_choice: "required"` (or a named function) is enforced by seeding the
+generation with the opening of a tool call in the model's own format.
 
 Honest limitations: generation runs on plain `transformers` - tens of tokens
 per second, one request at a time, no auth, context bounded by VRAM. Why not
