@@ -3,6 +3,10 @@
 #     ghcr.io/moudrkat/brainscope:cuda --model qwen3-4b
 FROM pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime
 
+# The base image marks its python as externally managed (PEP 668); inside a
+# single-purpose container installing into it is exactly what we want.
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
+
 COPY . /src
 RUN pip install --no-cache-dir /src && rm -rf /src
 
