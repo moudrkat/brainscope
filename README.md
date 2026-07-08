@@ -28,7 +28,7 @@ No app handy? The viz page has a built-in chat box - type and watch.
 Or skip Python entirely and run the Docker image:
 
 ```bash
-docker run -p 8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
+docker run -p 127.0.0.1:8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
   ghcr.io/moudrkat/brainscope:cpu
 ```
 
@@ -36,12 +36,14 @@ Anything after the image name goes to the brainscope CLI. With an NVIDIA GPU
 (and nvidia-container-toolkit) use the `:cuda` tag and bigger models:
 
 ```bash
-docker run --gpus all -p 8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
+docker run --gpus all -p 127.0.0.1:8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
   ghcr.io/moudrkat/brainscope:cuda --model qwen3-4b
 ```
 
 The cache mount keeps downloaded model weights on your disk, so they survive
-container restarts.
+container restarts. The `127.0.0.1:` binding keeps the port private to your
+machine — brainscope has no auth, and Docker port mappings bypass ufw-style
+firewalls, so only drop it (`-p 8010:8010`) on a network you trust.
 
 `--model` takes any Hugging Face model id, plus presets: `tiny`
 (Qwen2.5-0.5B, CPU-friendly), `qwen3-4b`, `qwen3-8b`, `qwen3.5-9b`,
