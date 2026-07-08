@@ -15,7 +15,7 @@ activation-steering vector.
   compliant completion vs. one showing the unwanted behaviour. Two datasets:
   one built from real traffic, one fully synthetic (templated topics, the
   exact forbidden phrasings injected).
-- **Extraction**: `brainscope.hidden_directions` — per-layer PCA over
+- **Extraction**: `brainscope.pca_directions` — per-layer PCA over
   completion-token hidden-state diffs + a per-layer separation score.
 - **Eval**: held-out real prompts, generated baseline vs. steered at several
   strengths; a deterministic violation checker mirroring the validator's rules
@@ -72,7 +72,7 @@ coherent outputs: zero violations.
 ```bash
 # 1. build pairs.jsonl - templated, one behaviour, same prompt both sides
 # 2. extract + read the layer table
-python -m brainscope.hidden_directions --model qwen3-4b \
+python -m brainscope.pca_directions --model qwen3-4b \
     --pairs pairs.jsonl --name my-direction --out dirs.json
 # 3. serve with the vector loaded
 brainscope --model qwen3-4b --directions dirs.json

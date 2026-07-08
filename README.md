@@ -93,7 +93,7 @@ extractors ship with brainscope:
 - `brainscope.extract` - quick mean-difference at one layer you pick. Takes
   `{"positive": ..., "negative": ...}` lines (see `examples/*.jsonl`); fine
   for strong directions like language switching.
-- `brainscope.hidden_directions` - the serious one: the first principal
+- `brainscope.pca_directions` - the serious one: the first principal
   component of completion-hidden differences at *every* layer, scored by how
   cleanly it separates the two sides - you learn *where* the behaviour lives
   instead of guessing. Takes `{"prompt": ..., "positive": ..., "negative":
@@ -101,7 +101,7 @@ extractors ship with brainscope:
   differ in exactly the behaviour you want.
 
 ```bash
-python -m brainscope.hidden_directions --model qwen3-4b \
+python -m brainscope.pca_directions --model qwen3-4b \
     --pairs pairs.jsonl --name no-smalltalk --out dirs.json
 # prints a per-layer score table and the suggested steering layer range
 brainscope --model qwen3-4b --directions dirs.json
@@ -112,6 +112,20 @@ layer range - or script it: `curl -X POST localhost:8010/steer -d '{"name":
 "no-smalltalk", "strength": 8, "layer_from": 16, "layer_to": 18}'`. The
 vector library is `dirs.json` next to the server, manageable over HTTP
 (`GET`/`POST /directions`, `DELETE /directions/{name}`).
+
+Direction dictionaries from my research repo
+[hidden-directions](https://github.com/moudrkat/hidden-directions) (persona
+vectors baked into weights + the audit tool that catches them) load as-is -
+point `--directions` at a `direction_dict/` folder and per-layer matrices get
+applied row-per-layer:
+
+```bash
+brainscope --model Qwen/Qwen2.5-7B-Instruct --quantize 8bit \
+    --directions hidden-directions/direction_dict/qwen2.5-7b
+```
+
+Directions only make sense on the model they were extracted from - brainscope
+checks the dict's manifest and warns on a mismatch.
 
 The slider and `/steer` are **global** - right for hand-exploration, wrong
 for apps (a vector tuned for one agent breaks another; we know). Apps scope

@@ -143,17 +143,24 @@ def _decoder_layers(model):
 
 
 def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int) -> list:
-    """Register activation-addition hooks (h += strength * direction), return handles."""
+    """Register activation-addition hooks (h += strength * direction), return handles.
+
+    A direction is either one vector [hidden] applied to every steered layer,
+    or a per-layer matrix [n_layers, hidden] (e.g. a hidden-directions dict
+    entry) where each steered layer gets its own row."""
     vec = state["directions"][name]
 
-    def hook(_module, _inp, out):
-        hidden = out[0] if isinstance(out, tuple) else out
-        hidden = hidden + strength * vec.to(hidden.dtype)
-        return (hidden, *out[1:]) if isinstance(out, tuple) else hidden
+    def make_hook(row):
+        def hook(_module, _inp, out):
+            hidden = out[0] if isinstance(out, tuple) else out
+            hidden = hidden + strength * row.to(hidden.dtype)
+            return (hidden, *out[1:]) if isinstance(out, tuple) else hidden
+        return hook
 
     layers = _decoder_layers(state["model"])
     layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
-    return [layers[i].register_forward_hook(hook)
+    return [layers[i].register_forward_hook(
+                make_hook(vec[min(i, vec.shape[0] - 1)] if vec.dim() == 2 else vec))
             for i in range(max(0, layer_from), layer_to + 1)]
 
 
@@ -178,11 +185,12 @@ def apply_steering(name: str | None, strength: float, layer_from: int, layer_to:
 def _layer_signals(hidden_states, directions):
     """Per-layer L2 norms (+ cosines with named directions) for the last token."""
     norms, cos = [], {name: [] for name in directions}
-    for h in hidden_states[1:]:  # skip embedding layer
+    for i, h in enumerate(hidden_states[1:]):  # skip embedding layer
         v = h[0, -1].float()
         norms.append(float(v.norm()))
         for name, d in directions.items():
-            cos[name].append(float(torch.nn.functional.cosine_similarity(v, d, dim=0)))
+            row = d[min(i, d.shape[0] - 1)] if d.dim() == 2 else d
+            cos[name].append(float(torch.nn.functional.cosine_similarity(v, row.float(), dim=0)))
     return norms, cos
 
 
@@ -570,22 +578,50 @@ def _persist_directions() -> None:
     path = state.get("dirs_path")
     if not path:
         return
-    raw = {k: [round(float(x), 6) for x in v.tolist()]
+    raw = {k: [round(float(x), 6) for x in v.tolist()] if v.dim() == 1 else
+              [[round(float(x), 6) for x in row] for row in v.tolist()]
            for k, v in state["directions"].items()}
     Path(path).write_text(json.dumps(raw))
+
+
+def load_direction_dict(path: Path) -> dict:
+    """Load a direction_dict/ folder in the hidden-directions layout
+    (github.com/moudrkat/hidden-directions): manifest.json naming the source
+    model plus one .pt tensor per direction, shaped [hidden] or
+    [n_layers, hidden]. Tensors are loaded with weights_only=True, so a dict
+    from the internet cannot execute code here."""
+    hidden = _hidden_size()
+    manifest_path = path / "manifest.json"
+    if manifest_path.exists():
+        src_model = json.loads(manifest_path.read_text()).get("model")
+        if src_model and src_model != state["model_name"]:
+            print(f"brainscope: WARNING — direction dict was extracted on {src_model}, "
+                  f"but the loaded model is {state['model_name']}; foreign directions "
+                  "produce noise, not steering", flush=True)
+    dirs = {}
+    for f in sorted(path.glob("*.pt")):
+        t = torch.load(f, map_location="cpu", weights_only=True)
+        if not torch.is_tensor(t) or t.dim() > 2 or t.shape[-1] != hidden:
+            shape = tuple(t.shape) if torch.is_tensor(t) else type(t).__name__
+            print(f"brainscope: skipping {f.name} ({shape} does not fit hidden size {hidden})", flush=True)
+            continue
+        dirs[f.stem] = t.float().to(state["device"])
+    print(f"brainscope: loaded {len(dirs)} direction(s) from {path}", flush=True)
+    return dirs
 
 
 @app.post("/directions")
 async def add_direction(body: dict):
     name, vector = body.get("name"), body.get("vector")
     if not name or not isinstance(vector, list):
-        return JSONResponse({"error": "expected {name, vector: [floats]}"},
+        return JSONResponse({"error": "expected {name, vector: [floats] or [[floats] per layer]}"},
                             status_code=400)
     hidden = _hidden_size()
-    if len(vector) != hidden:
-        return JSONResponse({"error": f"vector must have {hidden} dims"},
+    tensor = torch.tensor(vector).float()
+    if tensor.dim() > 2 or tensor.shape[-1] != hidden:
+        return JSONResponse({"error": f"vector rows must have {hidden} dims"},
                             status_code=400)
-    state["directions"][name] = torch.tensor(vector).float().to(state["device"])
+    state["directions"][name] = tensor.to(state["device"])
     _persist_directions()
     return {"directions": sorted(state["directions"])}
 
@@ -674,7 +710,8 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--device", default=None)
     parser.add_argument("--directions", type=Path, default=None,
-                        help="JSON {name: [hidden_size floats]} to project layers onto")
+                        help="JSON {name: vector or [n_layers, hidden] matrix}, or a "
+                             "hidden-directions direction_dict/ folder (manifest.json + *.pt)")
     parser.add_argument("--policy", type=Path, default=None,
                         help="JSON steering-policy rules matched against request metadata tags")
     parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
@@ -689,11 +726,14 @@ def main() -> None:
     print(f"brainscope: loading {model_id} …")
     load_model(model_id, args.device, args.quantize)
     if args.directions:
-        state["dirs_path"] = args.directions
-        if args.directions.exists():
-            raw = json.loads(args.directions.read_text())
-            state["directions"] = {k: torch.tensor(v).float().to(state["device"])
-                                   for k, v in raw.items()}
+        if args.directions.is_dir():   # hidden-directions direction_dict/ (read-only)
+            state["directions"] = load_direction_dict(args.directions)
+        else:
+            state["dirs_path"] = args.directions
+            if args.directions.exists():
+                raw = json.loads(args.directions.read_text())
+                state["directions"] = {k: torch.tensor(v).float().to(state["device"])
+                                       for k, v in raw.items()}
     if args.policy:
         state["policy_path"] = args.policy
         if args.policy.exists():
