@@ -130,6 +130,12 @@ brainscope --model Qwen/Qwen2.5-7B-Instruct --quantize 8bit \
 Directions only make sense on the model they were extracted from - brainscope
 checks the dict's manifest and warns on a mismatch.
 
+hidden-directions can also *bake* a persona permanently into one MLP bias;
+`--bake path/to/artifact` patches such an artifact into the served model. Load
+the direction dictionary alongside it and you get a live audit: every token
+reports its per-layer cosine with each catalogued direction, so a baked
+persona shows up in the visualization even though no runtime steering is on.
+
 The slider and `/steer` are **global** - right for hand-exploration, wrong
 for apps (a vector tuned for one agent breaks another; we know). Apps scope
 steering to a single request instead:

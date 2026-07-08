@@ -143,6 +143,27 @@ def _decoder_layers(model):
     raise RuntimeError("cannot locate decoder layers on this architecture")
 
 
+def apply_bake(path: Path) -> None:
+    """Patch a hidden-directions bake artifact (advocate_bias.pt) into the
+    loaded model: the saved persona bias is added to one MLP down_proj output
+    via a forward hook. A hook (rather than a real bias parameter) survives
+    quantization, where bitsandbytes replaces the Linear module."""
+    art = torch.load(path / "advocate_bias.pt", map_location="cpu", weights_only=True)
+    if art.get("base_model") and art["base_model"] != state["model_name"]:
+        print(f"brainscope: WARNING — bake artifact was made for {art['base_model']}, "
+              f"but the loaded model is {state['model_name']}", flush=True)
+    bias = art["bias"].to(state["device"])
+
+    def hook(_module, _inp, out):
+        t = out[0] if isinstance(out, tuple) else out
+        t = t + bias.to(t.dtype)
+        return (t, *out[1:]) if isinstance(out, tuple) else t
+
+    _decoder_layers(state["model"])[art["layer"]].mlp.down_proj.register_forward_hook(hook)
+    print(f"brainscope: bake applied at layer {art['layer']} — {art.get('note', path)}",
+          flush=True)
+
+
 def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int) -> list:
     """Register activation-addition hooks (h += strength * direction), return handles.
 
@@ -713,6 +734,9 @@ def main() -> None:
     parser.add_argument("--directions", type=Path, default=None,
                         help="JSON {name: vector or [n_layers, hidden] matrix}, or a "
                              "hidden-directions direction_dict/ folder (manifest.json + *.pt)")
+    parser.add_argument("--bake", type=Path, default=None,
+                        help="hidden-directions bake artifact folder (advocate_bias.pt) "
+                             "to patch into the model — serve a baked persona and audit it")
     parser.add_argument("--policy", type=Path, default=None,
                         help="JSON steering-policy rules matched against request metadata tags")
     parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
@@ -726,6 +750,8 @@ def main() -> None:
     model_id = PRESETS.get(args.model, args.model)
     print(f"brainscope: loading {model_id} …")
     load_model(model_id, args.device, args.quantize)
+    if args.bake:
+        apply_bake(args.bake)
     if args.directions:
         if args.directions.is_dir():   # hidden-directions direction_dict/ (read-only)
             state["directions"] = load_direction_dict(args.directions)
