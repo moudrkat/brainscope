@@ -83,8 +83,10 @@ four instruments:
   layer where its prediction settled (clean = early, amber = late, red =
   never before lm_head); hovering shows what the model almost said instead.
 
-The ◉ scope button pauses capture when you just want fast generation;
-● record exports a WebM, PNG saves a snapshot.
+The ◉ capture button pauses the instruments when you just want fast
+generation; ● record exports a WebM, PNG saves a snapshot. In the header,
+⏻ switches steering on and off without losing the strength and layer
+settings - instant A/B.
 
 An example of what the lens view can catch:
 

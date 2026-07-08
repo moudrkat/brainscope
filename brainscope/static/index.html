@@ -167,12 +167,13 @@
   <div class="wordmark">brain<b>scope</b><small>a live cross-section of a language model</small></div>
   <div id="controls">
     <span id="steerbox">
+      <button id="steerbtn" class="btn">⏻ steering off</button>
       <select id="dir"></select>
       <input id="strength" type="range" min="-15" max="15" step="0.5" value="0">
       <span id="sval">0.0</span>
       <input id="lrange" title="steered layer range, e.g. 16-18" spellcheck="false">
     </span>
-    <button id="vizbtn" class="btn">◉ scope</button>
+    <button id="vizbtn" class="btn">◉ capture</button>
     <button id="polbtn" class="btn" style="display:none"></button>
     <button id="rec" class="btn">● record</button>
     <button id="snap" class="btn">PNG</button>
@@ -858,6 +859,15 @@ const dirSel = document.getElementById("dir");
 const strengthEl = document.getElementById("strength");
 const svalEl = document.getElementById("sval");
 let dirMeta = {};        // per-direction steering presets from the server
+let steerOn = false;     // the ⏻ switch: values stay set, the vector detaches
+const steerBtn = document.getElementById("steerbtn");
+function paintSteerBtn() {
+  steerBtn.textContent = steerOn ? "⏻ steering on" : "⏻ steering off";
+  steerBtn.classList.toggle("pol-on", steerOn);
+  steerBtn.title = steerOn
+    ? "vector is applied to every generation — click to detach it (settings stay)"
+    : "click to apply the selected vector at the shown strength and layers";
+}
 async function initSteer() {
   const r = await fetch("/directions").then(r => r.json()).catch(() => null);
   if (!r || !r.directions.length) return;
@@ -866,11 +876,13 @@ async function initSteer() {
   steerbox.style.display = "flex";
   applyPreset();
   if (r.steer) {
+    steerOn = true;
     dirSel.value = r.steer.name;
     strengthEl.value = r.steer.strength;
     svalEl.textContent = (+r.steer.strength).toFixed(1);
     if (r.steer.layers) lrangeEl.value = `${r.steer.layers[0]}-${r.steer.layers[1]}`;
   }
+  paintSteerBtn();
 }
 const lrangeEl = document.getElementById("lrange");
 function steeredLayers() {
@@ -880,11 +892,19 @@ function steeredLayers() {
 }
 async function pushSteer() {
   svalEl.textContent = (+strengthEl.value).toFixed(1);
+  if (!steerOn) return;   // settings are staged; the ⏻ switch applies them
   const [from, to] = steeredLayers();
   await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value,
       layer_from: from, layer_to: to})});
 }
+steerBtn.onclick = async () => {
+  steerOn = !steerOn;
+  paintSteerBtn();
+  if (steerOn) await pushSteer();
+  else await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: dirSel.value, strength: 0, layer_from: 0, layer_to: -1})});
+};
 function applyPreset() {   // extraction knows where the behaviour lives — prefill it
   const m = dirMeta[dirSel.value];
   if (!m) return;
@@ -925,7 +945,7 @@ initPolicy();
 const vizBtn = document.getElementById("vizbtn");
 let vizOn = true;
 function paintViz() {
-  vizBtn.textContent = vizOn ? "◉ scope on" : "○ scope off";
+  vizBtn.textContent = vizOn ? "◉ capture on" : "○ capture off";
   vizBtn.classList.toggle("pol-on", vizOn);
   vizBtn.title = vizOn
     ? "capturing signals on every token (slower) — click to go dark & fast"
