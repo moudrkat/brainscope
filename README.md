@@ -1,5 +1,7 @@
 # brainscope
 
+[![CI](https://github.com/moudrkat/brainscope/actions/workflows/ci.yml/badge.svg)](https://github.com/moudrkat/brainscope/actions/workflows/ci.yml)
+
 **Watch your model think while your app talks to it.**
 
 An OpenAI-compatible chat server over any Hugging Face causal LM that streams
@@ -98,7 +100,8 @@ extractors ship with brainscope:
   cleanly it separates the two sides - you learn *where* the behaviour lives
   instead of guessing. Takes `{"prompt": ..., "positive": ..., "negative":
   ..., "system": ...}` lines - the same prompt with two continuations that
-  differ in exactly the behaviour you want.
+  differ in exactly the behaviour you want (see
+  `examples/no_smalltalk_prompt_pairs.jsonl`).
 
 ```bash
 python -m brainscope.pca_directions --model qwen3-4b \

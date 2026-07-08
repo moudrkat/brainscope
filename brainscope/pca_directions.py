@@ -89,7 +89,7 @@ def main() -> None:
         raise SystemExit(
             f"{args.pairs}: every line needs \"prompt\", \"positive\" and \"negative\" "
             f"(missing: {', '.join(sorted(missing))}). Files with only positive/negative "
-            "texts (like examples/*.jsonl) are for the simpler extractor: "
+            "texts (like examples/czech_pairs.jsonl) are for the simpler extractor: "
             "python -m brainscope.extract")
 
     model_id = PRESETS.get(args.model, args.model)
