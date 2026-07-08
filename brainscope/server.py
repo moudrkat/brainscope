@@ -7,10 +7,11 @@ in a window next to your app.
 
     python -m brainscope.server --model Qwen/Qwen2.5-0.5B-Instruct --port 8010
 
-Optional steering-direction projections: --directions dirs.json where the file
-maps {"name": [hidden_size floats], ...}; each generated token then also
-reports its per-layer cosine with every named direction (the hook for watching
-steering vectors work — and, later, for applying them).
+Optional steering directions: --directions takes either a dirs.json mapping
+{"name": vector or [n_layers, hidden] matrix, ...} or a hidden-directions
+direction_dict/ folder (manifest.json + *.pt). Loaded directions can be
+applied live (activation addition, globally / per request / by policy), and
+every generated token reports its per-layer cosine with each named direction.
 """
 
 import argparse
