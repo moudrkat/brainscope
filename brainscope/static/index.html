@@ -140,6 +140,9 @@
          font:13px var(--mono); padding:11px 14px; outline:none; border-radius:6px;
          transition:border-color .15s; }
   #msg::placeholder { color:var(--faint); }
+  #maxtok { width:66px; background:var(--panel); border:1px solid var(--line); color:var(--muted);
+            font:12px var(--mono); padding:11px 8px; outline:none; border-radius:6px; text-align:right; }
+  #maxtok:focus { border-color:var(--accent); color:var(--ink); }
   #msg:focus { border-color:var(--accent); }
   #send { background:var(--accent); color:#171207; border:none; padding:11px 22px;
           font:700 13px var(--mono); cursor:pointer; border-radius:6px; }
@@ -252,6 +255,7 @@
   <div id="sources"></div>
   <div id="chat">
     <input id="msg" placeholder="talk to the model — or let your app do the talking and just watch" autocomplete="off">
+    <input id="maxtok" type="number" min="16" max="4096" step="16" value="256" title="max answer length (tokens) for the chat box">
     <button id="send">send</button>
   </div>
   <div id="legend">
@@ -725,7 +729,8 @@ async function send() {
   try {
     await fetch("/v1/chat/completions", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({messages: [{role: "user", content: text}], max_tokens: 512}),
+      body: JSON.stringify({messages: [{role: "user", content: text}],
+        max_tokens: +document.getElementById("maxtok").value || 256}),
     });
   } finally { msgEl.disabled = false; msgEl.focus(); }
 }
