@@ -143,6 +143,10 @@
   #maxtok { width:66px; background:var(--panel); border:1px solid var(--line); color:var(--muted);
             font:12px var(--mono); padding:11px 8px; outline:none; border-radius:6px; text-align:right; }
   #maxtok:focus { border-color:var(--accent); color:var(--ink); }
+  #stop { background:var(--panel); color:var(--muted); border:1px solid var(--line);
+          font:600 12px var(--mono); padding:11px 14px; border-radius:6px; cursor:pointer;
+          white-space:nowrap; }
+  #stop:hover { color:#e5636b; border-color:#e5636b; }
   #msg:focus { border-color:var(--accent); }
   #send { background:var(--accent); color:#171207; border:none; padding:11px 22px;
           font:700 13px var(--mono); cursor:pointer; border-radius:6px; }
@@ -257,6 +261,7 @@
     <input id="msg" placeholder="talk to the model — or let your app do the talking and just watch" autocomplete="off">
     <input id="maxtok" type="number" min="16" max="4096" step="16" value="256" title="max answer length (tokens) for the chat box">
     <button id="send">send</button>
+    <button id="stop" title="stop the current generation and keep the partial answer">■ stop</button>
   </div>
   <div id="legend">
     the column on the left is the model itself — <span class="sw"></span> how loudly each part works
@@ -736,6 +741,8 @@ async function send() {
 }
 document.getElementById("send").onclick = send;
 msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+document.getElementById("stop").onclick = () =>
+  fetch("/stop", {method: "POST"}).catch(() => {});
 
 // hover tooltips
 const tip = document.getElementById("tip");
