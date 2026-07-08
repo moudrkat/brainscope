@@ -441,6 +441,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
            "tokens": [], "norms": [], "lens": [], "attn_rows": [], "last_heads": [],
            "steer": active_steer, "tags": tags or {}, "done": False}
     state["gen"] = gen
+    state["stop"] = False   # cleared each generation; POST /stop sets it
     notify({"type": "start", "gen_id": gen["id"], "prompt_tokens": n_prompt,
             "model": state["model_name"], "steer": active_steer, "tags": tags or {}})
 
@@ -508,7 +509,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         notify(payload)
         generated.append(int(next_id))
         ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
-        if int(next_id) == tok.eos_token_id:
+        if int(next_id) == tok.eos_token_id or state.get("stop"):
             break
 
     text = forced_prefix + tok.decode(generated, skip_special_tokens=False)
@@ -834,6 +835,14 @@ async def set_policy(body: dict):
         state["policy_on"] = bool(body["enabled"])
     _persist_policy()
     return {"policy": state["policy"], "enabled": state["policy_on"]}
+
+
+@app.post("/stop")
+async def stop():
+    # cooperative cancel: the decode loop checks state["stop"] each token, so
+    # this returns the partial answer instead of killing the whole server
+    state["stop"] = True
+    return {"stopped": True}
 
 
 @app.post("/steer")
