@@ -1,0 +1,11 @@
+# CUDA image — for machines with an NVIDIA GPU (needs nvidia-container-toolkit).
+#   docker run --gpus all -p 8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
+#     ghcr.io/moudrkat/brainscope:cuda --model qwen3-4b
+FROM pytorch/pytorch:2.12.1-cuda13.0-cudnn9-runtime
+
+COPY . /src
+RUN pip install --no-cache-dir /src && rm -rf /src
+
+EXPOSE 8010
+ENTRYPOINT ["brainscope", "--no-browser", "--host", "0.0.0.0"]
+CMD ["--model", "tiny"]

@@ -1,0 +1,13 @@
+.git
+.venv
+.idea
+notes/
+LINKEDIN_POST.md
+__pycache__/
+*.egg-info/
+build/
+dist/
+docs/
+Dockerfile*
+.dockerignore
+.github/
