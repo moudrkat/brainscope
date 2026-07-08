@@ -4,11 +4,21 @@
 
 **Watch your model think while your app talks to it.**
 
-An OpenAI-compatible chat server over any Hugging Face causal LM that streams
-per-token, per-layer residual-stream activity to a live browser visualization.
-No changes to your app: point its OpenAI `base_url` at brainscope and open
-the viz in a window next to it. Live activation steering is wired in as an
-early work-in-progress.
+An OpenAI-compatible chat server over any Hugging Face causal LM with a live
+view into the residual stream. Three things it does:
+
+- **See inside real traffic** — no changes to your app: point its OpenAI
+  `base_url` at brainscope and every generation streams per-token, per-layer
+  activity into the browser — logit lens, attention, and where each word's
+  prediction settled.
+- **Steer behaviour live** — extract a direction from contrast pairs and
+  drive it from a slider, per request, or by a tag-matched policy.
+- **Audit baked personas** — a 9 KB weights patch can turn a model into a
+  covert advocate
+  ([hidden-directions](https://github.com/moudrkat/hidden-directions), the
+  sister project). Serve the patched model here with the persona catalogue
+  loaded and the per-layer cosines expose it, token by token — no runtime
+  steering involved.
 
 > Built at [Lifeheck](https://www.lifeheck.com/) while evaluating local models for a
 > Czech agentic assistant - thanks to the whole team for the playground. 💛
@@ -116,26 +126,6 @@ layer range - or script it: `curl -X POST localhost:8010/steer -d '{"name":
 vector library is `dirs.json` next to the server, manageable over HTTP
 (`GET`/`POST /directions`, `DELETE /directions/{name}`).
 
-Direction dictionaries from my research repo
-[hidden-directions](https://github.com/moudrkat/hidden-directions) (persona
-vectors baked into weights + the audit tool that catches them) load as-is -
-point `--directions` at a `direction_dict/` folder and per-layer matrices get
-applied row-per-layer:
-
-```bash
-brainscope --model Qwen/Qwen2.5-7B-Instruct --quantize 8bit \
-    --directions hidden-directions/direction_dict/qwen2.5-7b
-```
-
-Directions only make sense on the model they were extracted from - brainscope
-checks the dict's manifest and warns on a mismatch.
-
-hidden-directions can also *bake* a persona permanently into one MLP bias;
-`--bake path/to/artifact` patches such an artifact into the served model. Load
-the direction dictionary alongside it and you get a live audit: every token
-reports its per-layer cosine with each catalogued direction, so a baked
-persona shows up in the visualization even though no runtime steering is on.
-
 The slider and `/steer` are **global** - right for hand-exploration, wrong
 for apps (a vector tuned for one agent breaks another; we know). Apps scope
 steering to a single request instead:
@@ -157,6 +147,35 @@ Still early: extraction quality decides everything, and over-steering
 degrades the model into repetition. Before steering anything real, read
 [docs/steering.md](docs/steering.md) - a case study and the lessons we
 learned the hard way.
+
+## Auditing baked personas
+
+My research repo
+[hidden-directions](https://github.com/moudrkat/hidden-directions) shows that
+an advocate persona (say, a flat-earther) can be *baked into 9 KB* of a
+model's weights - one MLP bias - and ships a catalogue of persona directions
+plus the audit tool that catches such bakes on disk. brainscope is the live
+half of that audit: serve the baked model, load the catalogue, and watch the
+persona surface in the representations.
+
+```bash
+brainscope --model Qwen/Qwen2.5-7B-Instruct --quantize 8bit \
+    --bake hidden-directions/artifacts/example_flat_earth_7b \
+    --directions hidden-directions/direction_dict/qwen2.5-7b
+```
+
+Ask it about the shape of the Earth: it answers flat - with **no runtime
+steering active** - and every token reports its per-layer cosine with each
+catalogued direction, so `v_pref_flat_earth` visibly lights up from the baked
+layer on. Restart without `--bake` for the clean baseline.
+
+The pieces compose: `--directions` takes any `direction_dict/` folder
+(per-layer matrices are applied row-per-layer; tensors load with
+`weights_only`, so a dict from the internet cannot execute code), the
+manifest's model is checked and mismatches are warned about, and any
+catalogued direction can also be driven as a steering vector - the persona
+that was baked at strength 1.5 on one layer can be re-created live from the
+slider.
 
 ## Will it work with my app?
 
