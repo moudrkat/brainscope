@@ -83,6 +83,15 @@ def main() -> None:
 
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
+    pairs = [json.loads(l) for l in args.pairs.read_text().splitlines() if l.strip()]
+    missing = {k for p in pairs for k in ("prompt", "positive", "negative") if k not in p}
+    if missing:
+        raise SystemExit(
+            f"{args.pairs}: every line needs \"prompt\", \"positive\" and \"negative\" "
+            f"(missing: {', '.join(sorted(missing))}). Files with only positive/negative "
+            "texts (like examples/*.jsonl) are for the simpler extractor: "
+            "python -m brainscope.extract")
+
     model_id = PRESETS.get(args.model, args.model)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(model_id)
@@ -97,7 +106,6 @@ def main() -> None:
         model = model.to(device)
     model.eval()
 
-    pairs = [json.loads(l) for l in args.pairs.read_text().splitlines() if l.strip()]
     pos_h, neg_h = [], []
     for i, p in enumerate(pairs):
         pos_h.append(completion_hiddens(model, tok, device, p.get("system"),
