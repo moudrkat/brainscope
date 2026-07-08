@@ -345,6 +345,64 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 torch.cuda.empty_cache()
 
 
+def _tool_scan_new() -> dict:
+    return {"buf": "", "in_call": False, "stack": [], "in_str": False, "esc": False,
+            "expect": "key", "key": "", "args_depth": None, "speak": True}
+
+
+def _tool_scan(st: dict, text: str) -> None:
+    """Advance the tool-call scanner over newly decoded text (mutates st).
+
+    Drives the steering mute: outside a <tool_call> block everything is
+    steered; inside one only the STRING VALUES under "arguments" may be
+    steered — the persona talks through the call's content while the JSON
+    scaffolding, the keys and the function name stay well-formed.
+    st["speak"] is True whenever steering may apply."""
+    for c in text:
+        st["buf"] = (st["buf"] + c)[-16:]
+        if not st["in_call"]:
+            if st["buf"].endswith("<tool_call>"):
+                st.update(in_call=True, stack=[], in_str=False, esc=False,
+                          expect="key", key="", args_depth=None)
+        elif st["buf"].endswith("</tool_call>"):
+            st["in_call"] = False
+        elif st["in_str"]:
+            if st["esc"]:
+                st["esc"] = False
+            elif c == "\\":
+                st["esc"] = True
+            elif c == '"':
+                st["in_str"] = False
+                if st["expect"] == "key":
+                    st["expect"] = "colon"
+        else:
+            if c == '"':
+                st["in_str"] = True
+                if st["expect"] == "key":
+                    st["key"] = ""
+            elif c == ":":
+                if st["expect"] == "colon":
+                    if st["key"] == "arguments" and st["args_depth"] is None:
+                        st["args_depth"] = len(st["stack"])
+                    st["expect"] = "value"
+            elif c in "{[":
+                st["stack"].append(c)
+                st["expect"] = "key" if c == "{" else "value"
+            elif c in "}]":
+                if st["stack"]:
+                    st["stack"].pop()
+                if st["args_depth"] is not None and len(st["stack"]) < st["args_depth"]:
+                    st["args_depth"] = None
+                st["expect"] = "key"
+            elif c == ",":
+                st["expect"] = "key" if (st["stack"] and st["stack"][-1] == "{") else "value"
+        if st["in_call"] and st["in_str"] and st["expect"] == "key":
+            st["key"] += c if c not in '"' else ""
+    st["speak"] = (not st["in_call"]) or (
+        st["in_str"] and st["expect"] == "value"
+        and st["args_depth"] is not None and len(st["stack"]) > st["args_depth"])
+
+
 def _generate(messages, tools, max_new_tokens, temperature, notify,
               active_steer=None, tags=None, tool_choice=None):
     tok, model = state["tokenizer"], state["model"]
@@ -369,10 +427,11 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             forced_prefix += f"\"{forced}\", \"arguments\": {{"
         prompt += forced_prefix
 
-    state["steer_mute"] = bool(forced_prefix)   # a forced call starts muted
+    scan = _tool_scan_new()
+    _tool_scan(scan, forced_prefix)
+    state["steer_mute"] = not scan["speak"]
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
-    running = forced_prefix   # decoded-so-far text, drives the tool-call mute
 
     n_prompt = ids.shape[1]
     prompt_ids = ids[0].tolist()[-4096:]  # axis labels; very long prompts keep the tail
@@ -423,11 +482,11 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         else:
             next_id = logits.argmax().reshape(1)
         piece = tok.decode(next_id)
-        # steering is muted while the model writes a tool call — a persona
-        # vector strong enough to matter corrupts strict JSON syntax, so the
-        # persona colours the prose and the calls stay well-formed
-        running += piece
-        state["steer_mute"] = running.count("<tool_call>") > running.count("</tool_call>")
+        # steering is muted while the model writes tool-call scaffolding — a
+        # persona vector strong enough to matter corrupts strict JSON syntax.
+        # Inside the string values of "arguments" the persona speaks again.
+        _tool_scan(scan, piece)
+        state["steer_mute"] = not scan["speak"]
         payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
         if out.hidden_states is not None:
             norms, cos = _layer_signals(out.hidden_states, state["directions"])
