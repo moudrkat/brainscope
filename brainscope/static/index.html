@@ -23,7 +23,7 @@
   #controls { display:flex; gap:10px; align-items:center; }
   .btn { background:var(--panel); color:var(--muted); border:1px solid var(--line);
          padding:6px 13px; font:600 12px var(--mono); cursor:pointer; border-radius:4px;
-         transition:color .15s, border-color .15s; }
+         white-space:nowrap; transition:color .15s, border-color .15s; }
   .btn:hover { color:var(--ink); border-color:var(--line2); }
   .btn.on { color:#e5636b; border-color:#e5636b; }
   .btn.pol-on { color:var(--live); border-color:var(--live); }
@@ -151,6 +151,10 @@
                 background:linear-gradient(90deg,#101927,#265a80,#3dbd7d,#e8b45a); }
 
   #steerbox { display:none; align-items:center; gap:8px; }
+  #stack { display:flex; gap:4px; align-items:center; }
+  .chip { font-size:10px; padding:1px 6px; border:1px solid var(--accent); border-radius:9px;
+          color:var(--accent); white-space:nowrap; cursor:pointer; }
+  .chip:hover { background:rgba(229,99,107,.15); }
   #dir { background:var(--panel); color:var(--ink); border:1px solid var(--line);
          font:12px var(--mono); padding:5px 8px; border-radius:4px; }
   #strength { accent-color:var(--accent); }
@@ -164,14 +168,16 @@
 </style>
 
 <header>
-  <div class="wordmark">brain<b>scope</b><small>a live cross-section of a language model</small></div>
+  <div class="wordmark">br<b>AI</b>nscope<small>a live cross-section of a language model</small></div>
   <div id="controls">
     <span id="steerbox">
-      <button id="steerbtn" class="btn">⏻ steering off</button>
+      <button id="steerbtn" class="btn">⏻ steer off</button>
       <select id="dir"></select>
       <input id="strength" type="range" min="-15" max="15" step="0.5" value="0">
       <span id="sval">0.0</span>
       <input id="lrange" title="steered layer range, e.g. 16-18" spellcheck="false">
+      <button id="stackadd" class="btn" title="add this vector to the stack — several vectors compose, like the bake recipes">＋</button>
+      <span id="stack"></span>
     </span>
     <button id="vizbtn" class="btn">◉ capture</button>
     <button id="polbtn" class="btn" style="display:none"></button>
@@ -643,7 +649,13 @@ async function backfill() {
   const tag = g.tags && g.tags.agent ? `${g.tags.agent}${g.tags.phase ? "/" + g.tags.phase : ""} · ` : "";
   stxt.textContent = `${tag}last gen · ${g.tokens.length} tok`;
   document.getElementById("tabnote").textContent =
-    g.steer ? `steered: ${g.steer.name} ${g.steer.strength} @ L${g.steer.layers[0]}–${g.steer.layers[1]}` : "";
+    steerLabel(g.steer);
+}
+function steerLabel(st) {   // one spec or a composed stack
+  if (!st) return "";
+  const arr = Array.isArray(st) ? st : [st];
+  return "steered: " + arr.map(s =>
+    `${s.name} ${s.strength} @ L${s.layers[0]}–${s.layers[1]}`).join("  +  ");
 }
 
 // ---------- websocket ----------
@@ -660,8 +672,7 @@ function connect() {
       dot.classList.add("live");
       const tag = msg.tags && msg.tags.agent ? ` · ${msg.tags.agent}${msg.tags.phase ? "/" + msg.tags.phase : ""}` : "";
       stxt.textContent = `generating · prompt ${msg.prompt_tokens} tok${tag}`;
-      document.getElementById("tabnote").textContent =
-        msg.steer ? `steered: ${msg.steer.name} ${msg.steer.strength} @ L${msg.steer.layers[0]}–${msg.steer.layers[1]}` : "";
+      document.getElementById("tabnote").textContent = steerLabel(msg.steer);
     } else if (msg.type === "token") {
       const kIdx = allTokens.length;
       allTokens.push(msg.text);
@@ -862,11 +873,24 @@ let dirMeta = {};        // per-direction steering presets from the server
 let steerOn = false;     // the ⏻ switch: values stay set, the vector detaches
 const steerBtn = document.getElementById("steerbtn");
 function paintSteerBtn() {
-  steerBtn.textContent = steerOn ? "⏻ steering on" : "⏻ steering off";
+  steerBtn.textContent = steerOn ? "⏻ steer on" : "⏻ steer off";
   steerBtn.classList.toggle("pol-on", steerOn);
   steerBtn.title = steerOn
     ? "vector is applied to every generation — click to detach it (settings stay)"
     : "click to apply the selected vector at the shown strength and layers";
+}
+let stack = [];          // committed vectors; the row above is the editor
+const stackEl = document.getElementById("stack");
+function paintStack() {
+  stackEl.innerHTML = "";
+  stack.forEach((s, i) => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${s.name} ${s.strength} @${s.layer_from}–${s.layer_to} ✕`;
+    chip.title = "click to remove from the stack";
+    chip.onclick = () => { stack.splice(i, 1); paintStack(); pushSteer(); };
+    stackEl.appendChild(chip);
+  });
 }
 async function initSteer() {
   const r = await fetch("/directions").then(r => r.json()).catch(() => null);
@@ -875,12 +899,18 @@ async function initSteer() {
   dirSel.innerHTML = r.directions.map(d => `<option>${d}</option>`).join("");
   steerbox.style.display = "flex";
   applyPreset();
-  if (r.steer) {
+  if (r.steer && r.steer.length) {
     steerOn = true;
-    dirSel.value = r.steer.name;
-    strengthEl.value = r.steer.strength;
-    svalEl.textContent = (+r.steer.strength).toFixed(1);
-    if (r.steer.layers) lrangeEl.value = `${r.steer.layers[0]}-${r.steer.layers[1]}`;
+    stack = r.steer.map(s => ({name: s.name, strength: s.strength,
+                               layer_from: s.layers[0], layer_to: s.layers[1]}));
+    if (stack.length === 1) {   // single vector lives in the editor row, not a chip
+      const s = stack.pop();
+      dirSel.value = s.name;
+      strengthEl.value = s.strength;
+      svalEl.textContent = (+s.strength).toFixed(1);
+      lrangeEl.value = `${s.layer_from}-${s.layer_to}`;
+    }
+    paintStack();
   }
   paintSteerBtn();
 }
@@ -890,20 +920,30 @@ function steeredLayers() {
   if (!m) return [Math.round(nLayersTotal / 3), Math.round(2 * nLayersTotal / 3)];
   return [+m[1], +m[2]];
 }
+function currentSpec() {
+  const [from, to] = steeredLayers();
+  return {name: dirSel.value, strength: +strengthEl.value, layer_from: from, layer_to: to};
+}
 async function pushSteer() {
   svalEl.textContent = (+strengthEl.value).toFixed(1);
   if (!steerOn) return;   // settings are staged; the ⏻ switch applies them
-  const [from, to] = steeredLayers();
+  const specs = stack.length ? stack : [currentSpec()];
   await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: dirSel.value, strength: +strengthEl.value,
-      layer_from: from, layer_to: to})});
+    body: JSON.stringify({stack: specs})});
 }
+document.getElementById("stackadd").onclick = () => {
+  const s = currentSpec();
+  if (!s.name || !s.strength) return;
+  stack.push(s);
+  paintStack();
+  pushSteer();
+};
 steerBtn.onclick = async () => {
   steerOn = !steerOn;
   paintSteerBtn();
   if (steerOn) await pushSteer();
   else await fetch("/steer", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: dirSel.value, strength: 0, layer_from: 0, layer_to: -1})});
+    body: JSON.stringify({stack: []})});
 };
 function applyPreset() {   // extraction knows where the behaviour lives — prefill it
   const m = dirMeta[dirSel.value];

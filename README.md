@@ -174,10 +174,18 @@ layer on. Restart without `--bake` for the clean baseline.
 The pieces compose: `--directions` takes any `direction_dict/` folder
 (per-layer matrices are applied row-per-layer; tensors load with
 `weights_only`, so a dict from the internet cannot execute code), the
-manifest's model is checked and mismatches are warned about, and any
-catalogued direction can also be driven as a steering vector - the persona
-that was baked at strength 1.5 on one layer can be re-created live from the
-slider.
+manifest's model is checked and mismatches are warned about, and the
+manifest's `recommended_layer`/`recommended_alpha` prefill the strength and
+layer controls when you pick a direction. Several vectors apply at once -
+the ＋ button stacks them in the UI, and the API takes
+`{"stack": [spec, ...]}` wherever a single steering spec goes - so the exact
+bake recipe can be re-created live:
+
+```bash
+curl -X POST localhost:8010/steer -d '{"stack": [
+  {"name": "v_pref_flat_earth", "strength": 1.5, "layer_from": 17, "layer_to": 17},
+  {"name": "v_refusal",        "strength": -1.0, "layer_from": 17, "layer_to": 17}]}'
+```
 
 ## Will it work with my app?
 

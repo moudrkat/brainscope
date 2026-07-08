@@ -186,22 +186,49 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
             for i in range(max(0, layer_from), layer_to + 1)]
 
 
-def apply_steering(name: str | None, strength: float, layer_from: int, layer_to: int) -> dict:
+def _normalize_steer(body) -> list:
+    """One steering spec, {"stack": [specs]}, or a bare list — always returns
+    a list of effective specs (unknown names and zero strengths drop out).
+    Stacks compose like the bake recipes: e.g. pref @ 1.5 with refusal @ -1."""
+    if not body:
+        return []
+    specs = body.get("stack", [body]) if isinstance(body, dict) else body
+    out = []
+    for s in specs if isinstance(specs, list) else []:
+        name, strength = s.get("name"), float(s.get("strength") or 0)
+        if name and strength != 0 and name in state["directions"]:
+            out.append({"name": name, "strength": strength,
+                        "layer_from": int(s.get("layer_from", 0)),
+                        "layer_to": int(s.get("layer_to", -1))})
+    return out
+
+
+def _install_steer_stack(specs: list) -> tuple[list, list]:
+    """Install hooks for every spec; returns (handles, applied-description)."""
+    n = len(_decoder_layers(state["model"]))
+    handles, applied = [], []
+    for s in specs:
+        handles += _install_steer_hooks(s["name"], s["strength"],
+                                        s["layer_from"], s["layer_to"])
+        lt = min(s["layer_to"] if s["layer_to"] >= 0 else n - 1, n - 1)
+        applied.append({"name": s["name"], "strength": s["strength"],
+                        "layers": [max(0, s["layer_from"]), lt]})
+    return handles, applied
+
+
+def apply_steering(body) -> dict:
     """(Re)install the GLOBAL steering hooks (the viz slider). Per-request
     steering (a `steering` object in a chat completions request) temporarily
     replaces these for the duration of that one generation."""
     for h in state["steer_handles"]:
         h.remove()
     state["steer_handles"] = []
-    if not name or strength == 0:
+    specs = _normalize_steer(body)
+    if not specs:
         state["steer"] = None
         return {"active": False}
-    state["steer_handles"] = _install_steer_hooks(name, strength, layer_from, layer_to)
-    layers = _decoder_layers(state["model"])
-    layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
-    state["steer"] = {"name": name, "strength": strength,
-                      "layers": [max(0, layer_from), layer_to]}
-    return {"active": True, **state["steer"]}
+    state["steer_handles"], state["steer"] = _install_steer_stack(specs)
+    return {"active": True, "steer": state["steer"]}
 
 
 def _layer_signals(hidden_states, directions):
@@ -292,14 +319,11 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
             for h in state["steer_handles"]:
                 h.remove()
             state["steer_handles"] = []
-            name = steering.get("name")
-            strength = float(steering.get("strength") or 0)
-            if name and strength != 0:
-                layer_from = int(steering.get("layer_from", 0))
-                layer_to = int(steering.get("layer_to", -1))
-                request_handles = _install_steer_hooks(name, strength, layer_from, layer_to)
-                active_steer = {"name": name, "strength": strength,
-                                "layers": [layer_from, layer_to], "scope": "request"}
+            specs = _normalize_steer(steering)
+            if specs:
+                request_handles, active_steer = _install_steer_stack(specs)
+                for a in active_steer:
+                    a["scope"] = "request"
             else:
                 active_steer = None
         try:
@@ -309,9 +333,10 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
             for h in request_handles:
                 h.remove()
             if steering is not None and state["steer"]:
-                s = state["steer"]
-                state["steer_handles"] = _install_steer_hooks(
-                    s["name"], s["strength"], s["layers"][0], s["layers"][1])
+                state["steer_handles"], state["steer"] = _install_steer_stack(
+                    [{"name": s["name"], "strength": s["strength"],
+                      "layer_from": s["layers"][0], "layer_to": s["layers"][1]}
+                     for s in state["steer"]])
             gc.collect()
             if state["device"] == "cuda":
                 torch.cuda.empty_cache()
@@ -452,13 +477,16 @@ async def chat_completions(body: dict):
     if steering is None and tags:
         steering = _match_policy(tags)
     if steering is not None:
-        if not isinstance(steering, dict):
-            return JSONResponse({"error": "steering must be an object"}, status_code=400)
-        name = steering.get("name")
-        if name and name not in state["directions"]:
-            return JSONResponse(
-                {"error": f"unknown direction {name!r}",
-                 "directions": sorted(state["directions"])}, status_code=400)
+        if not isinstance(steering, (dict, list)):
+            return JSONResponse({"error": "steering must be an object or a list"},
+                                status_code=400)
+        specs = steering.get("stack", [steering]) if isinstance(steering, dict) else steering
+        for s in specs if isinstance(specs, list) else []:
+            name = s.get("name")
+            if name and name not in state["directions"]:
+                return JSONResponse(
+                    {"error": f"unknown direction {name!r}",
+                     "directions": sorted(state["directions"])}, status_code=400)
 
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
@@ -669,8 +697,8 @@ async def delete_direction(name: str):
         return JSONResponse({"error": "unknown direction"}, status_code=404)
     del state["directions"][name]
     state["dir_meta"].pop(name, None)
-    if state["steer"] and state["steer"]["name"] == name:
-        apply_steering(None, 0, 0, -1)
+    if state["steer"] and any(s["name"] == name for s in state["steer"]):
+        apply_steering(None)
     _persist_directions()
     return {"directions": sorted(state["directions"])}
 
@@ -721,8 +749,9 @@ async def set_policy(body: dict):
 
 @app.post("/steer")
 async def steer(body: dict):
-    return apply_steering(body.get("name"), float(body.get("strength") or 0),
-                          int(body.get("layer_from", 0)), int(body.get("layer_to", -1)))
+    # one spec {"name", "strength", "layer_from", "layer_to"} — or a composed
+    # {"stack": [spec, ...]} applying several vectors at once (bake-recipe style)
+    return apply_steering(body)
 
 
 @app.get("/")
