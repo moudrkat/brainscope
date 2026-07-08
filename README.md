@@ -171,6 +171,13 @@ steering active** - and every token reports its per-layer cosine with each
 catalogued direction, so `v_pref_flat_earth` visibly lights up from the baked
 layer on. Restart without `--bake` for the clean baseline.
 
+The dictionary ships 40 directions - sycophant, refusal, a dozen
+contested-factual personas, an "evil" escalation ladder - each with a
+verified strength/layer that prefills the controls when you pick it. The
+[hidden-directions README](https://github.com/moudrkat/hidden-directions#the-qwen-25-7b-dictionary)
+catalogues them and lists starting points (e.g. `v_pref_sycophant` +1.5,
+`v_refusal` +2).
+
 The pieces compose: `--directions` takes any `direction_dict/` folder
 (per-layer matrices are applied row-per-layer; tensors load with
 `weights_only`, so a dict from the internet cannot execute code), the
