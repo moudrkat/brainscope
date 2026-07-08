@@ -25,6 +25,24 @@ brainscope --model tiny              # 0.5B, runs on CPU - good first try
 
 No app handy? The viz page has a built-in chat box - type and watch.
 
+Or skip Python entirely and run the Docker image:
+
+```bash
+docker run -p 8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
+  ghcr.io/moudrkat/brainscope:cpu
+```
+
+Anything after the image name goes to the brainscope CLI. With an NVIDIA GPU
+(and nvidia-container-toolkit) use the `:cuda` tag and bigger models:
+
+```bash
+docker run --gpus all -p 8010:8010 -v ~/.cache/huggingface:/root/.cache/huggingface \
+  ghcr.io/moudrkat/brainscope:cuda --model qwen3-4b
+```
+
+The cache mount keeps downloaded model weights on your disk, so they survive
+container restarts.
+
 `--model` takes any Hugging Face model id, plus presets: `tiny`
 (Qwen2.5-0.5B, CPU-friendly), `qwen3-4b`, `qwen3-8b`, `qwen3.5-9b`,
 `gemma-e4b`. Bigger models fit a 16 GB card with `--quantize 8bit`.
