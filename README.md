@@ -22,9 +22,9 @@ view into the residual stream. Three things it does:
 
 ```mermaid
 flowchart LR
-  app["Your app<br/>(any OpenAI client)"] <-->|"chat API · base_url → :8010/v1"| bs["brainscope<br/>server"]
-  bs <--> model["HF causal LM<br/>(transformers)"]
-  model -. "per-token, per-layer<br/>residual stream" .-> ui["Browser 👁<br/>lens · attention · settling"]
+  app["Your app<br/>(any OpenAI client)"] <-->|"base_url → /v1"| bs["brainscope<br/>server"]
+  bs <--> model["HF model<br/>(transformers)"]
+  model -. "residual stream" .-> ui["Browser viz 👁"]
 ```
 
 > Built at [Lifeheck](https://www.lifeheck.com/) while evaluating local models for a
@@ -77,19 +77,6 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 
 ## What am I looking at?
 
-```mermaid
-flowchart BT
-  prompt(["prompt in"]) --> L0["decoder layer 0"]
-  L0 --> Ldots["… one clickable row per layer …"]
-  Ldots --> LN["decoder layer N"]
-  LN --> head["lm_head"]
-  head --> word(["next word out"])
-
-  Ldots -. click a layer .-> attn["attention · activity"]
-  head -. click lm_head .-> lens["logit lens"]
-  word -. tinted by settling layer .-> text["answer text"]
-```
-
 Left: the model itself - the prompt enters at the bottom, one **clickable row
 per decoder layer**, the next word exits at the top (lm_head). On the right,
 four instruments:
@@ -131,10 +118,8 @@ other agent on the server untouched.
 
 ```mermaid
 flowchart LR
-  pairs["contrast pairs<br/>+ / − completions"] --> extract["extract direction<br/>(mean-diff or PCA-per-layer)"]
-  extract --> vec["steering vector<br/>+ suggested layer / strength"]
-  vec -->|"added at mid-stack layers"| stream["residual stream"]
-  stream --> out["shifted behaviour"]
+  pairs["contrast pairs<br/>＋ / − completions"] -->|"extract<br/>mean-diff / PCA"| vec["steering vector<br/>+ layer &amp; strength"]
+  vec -->|"add mid-stack"| out["shifted<br/>behaviour"]
 ```
 
 The best source of vectors is the sister repo
