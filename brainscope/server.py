@@ -59,6 +59,10 @@ state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {
 # Eager softmax upcasts to fp32, so the transient is chunk × seq × heads × 4 B
 # — at 128 that's ~0.4 GB for a 24k prompt, safe next to model + KV cache.
 PREFILL_CHUNK = 128
+# short prompts (<= this many tokens) get their FULL per-head seq×seq prefill
+# attention captured for the matrix viz — "peek into the model". Longer prompts
+# skip it (a 20k-token seq×seq×heads matrix would be gigabytes).
+ATTN_MATRIX_MAX = int(os.getenv("ATTN_MATRIX_MAX", "160"))
 
 # Tool-call output formats differ per model family; try each in order.
 TOOL_CALL_PATTERNS = [
@@ -261,6 +265,20 @@ def _logit_lens(hidden_states, top: int = 5):
              for k in range(top)] for layer in range(hs.shape[0])]
 
 
+def _capture_matrix(attentions, gen: dict) -> None:
+    """Full per-head self-attention from a SHORT prompt's prefill. Stored per
+    layer as uint8 [heads, seq, seq]; each query row is scaled to its own max so
+    the pattern is visible (causal ⇒ lower-triangular). Cheap when seq is small."""
+    if not attentions:
+        return
+    mats = []
+    for a in attentions:                       # a: [1, heads, seq, seq]
+        w = a[0].float()                        # [heads, seq, seq]
+        w = w / (w.amax(dim=-1, keepdim=True) + 1e-9)
+        mats.append((w * 255).round().to(torch.uint8).cpu().numpy())
+    gen["matrix"] = mats
+
+
 def _attn_signals(attentions, gen: dict):
     """Digest one decode step's attention weights.
 
@@ -438,7 +456,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     gen = {"id": uuid.uuid4().hex[:12], "n_prompt": n_prompt,
            "prompt_offset": n_prompt - len(prompt_ids),
            "prompt_tokens": [tok.decode(i) for i in prompt_ids],
-           "tokens": [], "norms": [], "lens": [], "attn_rows": [], "last_heads": [],
+           "tokens": [], "norms": [], "lens": [], "attn_rows": [], "last_heads": [], "matrix": None,
            "steer": active_steer, "tags": tags or {}, "done": False}
     state["gen"] = gen
     state["stop"] = False   # cleared each generation; POST /stop sets it
@@ -458,11 +476,19 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # prefill in chunks — with eager attention a single full-prompt forward
     # materializes the whole seq×seq attention matrix (a 24k-token agent
     # prompt ≈ 37 GB); chunked, the transient is only chunk×seq per layer
+    # SHORT prompt + viz on: one full forward WITH attentions, so the viz can
+    # show real per-head self-attention matrices (cheap when seq is small).
     out = None
-    for i in range(0, ids.shape[1], PREFILL_CHUNK):
-        out = model(input_ids=ids[:, i:i + PREFILL_CHUNK], past_key_values=past,
-                    use_cache=True, **logits_kw)
+    if state["viz"] and ids.shape[1] <= ATTN_MATRIX_MAX:
+        out = model(input_ids=ids, past_key_values=past, use_cache=True,
+                    output_attentions=True, **logits_kw)
         past = out.past_key_values
+        _capture_matrix(out.attentions, gen)
+    else:
+        for i in range(0, ids.shape[1], PREFILL_CHUNK):
+            out = model(input_ids=ids[:, i:i + PREFILL_CHUNK], past_key_values=past,
+                        use_cache=True, **logits_kw)
+            past = out.past_key_values
     if state["device"] == "cuda":
         torch.cuda.empty_cache()   # drop prefill transients before decode
 
@@ -653,6 +679,25 @@ async def gen_heads(layer: int = 0):
             "heads": len(data) // seq, "data": base64.b64encode(data).decode()}
 
 
+@app.get("/gen/matrix")
+async def gen_matrix(layer: int = 0):
+    """Full per-head self-attention matrices from a SHORT prompt's prefill:
+    [heads, seq, seq] uint8, row-major, each query row scaled to its own max.
+    Only present when the prompt was short enough (see ATTN_MATRIX_MAX) and viz
+    was on — long prompts skip it. This is the "peek into the model" view."""
+    g = state["gen"]
+    if not g or g.get("matrix") is None:
+        return JSONResponse({"error": "no attention matrix — prompt too long, or capture was off"},
+                            status_code=404)
+    if not 0 <= layer < len(g["matrix"]):
+        return JSONResponse({"error": "layer out of range"}, status_code=400)
+    m = g["matrix"][layer]                      # [heads, seq, seq] uint8
+    heads, seq, _ = m.shape
+    return {"id": g["id"], "layer": layer, "layers": len(g["matrix"]),
+            "heads": int(heads), "seq": int(seq),
+            "tokens": g["prompt_tokens"], "data": base64.b64encode(m.tobytes()).decode()}
+
+
 @app.post("/viz")
 async def set_viz(body: dict):
     """Toggle signal capture: {"on": bool}. Off = dark mode — the model just
@@ -759,6 +804,48 @@ def load_direction_dict(path: Path) -> dict:
         dirs[f.stem] = t.float().to(state["device"])
     print(f"brainscope: loaded {len(dirs)} direction(s) from {path}", flush=True)
     return dirs
+
+
+@app.post("/capture")
+async def capture(body: dict):
+    """Read a prompt's residual-stream state at one layer — the raw material for
+    agent-to-agent 'telepathy': capture agent A's state here, POST it to
+    /directions, then steer agent B by it (per-request or /steer).
+
+    {"messages": [...], "layer": int?, "pool": "mean"|"last"?} ->
+    {"layer", "pool", "hidden": int, "vector": [floats]}.
+
+    `layer` is a decoder-layer index (default: mid-stack); the vector returned is
+    that layer's OUTPUT residual, so injecting it back at the same layer aligns
+    with how the steer hooks add (h += strength * vector at that layer's output).
+    `pool` averages over the prompt tokens ("mean", default) or takes the last
+    position ("last")."""
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return JSONResponse({"error": "expected {messages: [...], layer?, pool?}"},
+                            status_code=400)
+    model = state["model"]
+    n_layers = len(_decoder_layers(model))
+    layer = int(body.get("layer", n_layers // 2))
+    if not 0 <= layer < n_layers:
+        return JSONResponse({"error": f"layer out of range 0..{n_layers - 1}"},
+                            status_code=400)
+    pool = body.get("pool", "mean")
+    if pool not in ("mean", "last"):
+        return JSONResponse({"error": "pool must be 'mean' or 'last'"}, status_code=400)
+
+    def run():
+        tok = state["tokenizer"]
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
+        with torch.no_grad():
+            out = model(input_ids=ids, output_hidden_states=True, use_cache=False)
+        h = out.hidden_states[layer + 1][0]   # [seq, hidden] — layer's output residual
+        vec = h[-1] if pool == "last" else h.mean(0)
+        return vec.float().cpu().tolist()
+
+    vector = await asyncio.to_thread(run)
+    return {"layer": layer, "pool": pool, "hidden": len(vector), "vector": vector}
 
 
 @app.post("/directions")
