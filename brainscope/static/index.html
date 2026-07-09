@@ -96,6 +96,12 @@
   #heat { height:430px; }
   #attncanvas { height:400px; }
   #headscanvas { height:260px; }
+  #matheads { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:9px; }
+  .mathead { width:36px; height:36px; border:1px solid var(--line); border-radius:3px;
+             cursor:pointer; image-rendering:pixelated; transition:border-color .1s; }
+  .mathead:hover { border-color:var(--muted); }
+  .mathead.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+  #matcanvas { height:440px; cursor:crosshair; }
 
   /* ---- logit lens ---- */
   #lensgrid { display:flex; gap:2px; overflow-x:auto; background:var(--panel2);
@@ -214,6 +220,7 @@
         <button class="tab on" data-p="act">activity over time</button>
         <button class="tab" data-p="attn" id="tab-attn">attention</button>
         <button class="tab" data-p="heads" id="tab-heads">heads</button>
+        <button class="tab" data-p="matrix" id="tab-matrix">matrix</button>
         <button class="tab" data-p="lens">logit lens</button>
         <span id="tabnote"></span>
       </div>
@@ -242,6 +249,15 @@
         <canvas id="headscanvas" class="pcanvas"></canvas>
         <div class="pcap">one row per attention head — where each head looks while emitting the newest token ·
           number = focus entropy (0 sharp → 1 diffuse)</div>
+      </div>
+      <div class="panel" id="p-matrix">
+        <div class="pinfo" id="matinfo">click a layer on the architecture — then a head below</div>
+        <div id="matheads"></div>
+        <canvas id="matcanvas" class="pcanvas"></canvas>
+        <div class="pcap">the full attention matrix of <b>one head</b> · each <b>row</b> = a token asking
+          "what do I look at?", each <b>column</b> = the token it reads · bright = strong attention ·
+          causal, so only the lower triangle lights up · <b>hover a cell</b> to read the two tokens ·
+          short prompts only</div>
       </div>
       <div class="panel" id="p-lens">
         <div class="pinfo">what the model would say if it stopped at each layer · top row = last layer ·
@@ -368,7 +384,8 @@ function selectLayer(l) {
   archRows.forEach((r, i) => r && r.row.classList.toggle("sel", i === l));
   document.getElementById("tab-attn").textContent = `attention · L${l + 1}`;
   document.getElementById("tab-heads").textContent = `heads · L${l + 1}`;
-  if (activeTab !== "heads") switchTab("attn");
+  document.getElementById("tab-matrix").textContent = `matrix · L${l + 1}`;
+  if (activeTab !== "heads" && activeTab !== "matrix") switchTab("attn");
   refreshActivePanel();
 }
 document.getElementById("node-lmhead").onclick = () => switchTab("lens");
@@ -388,6 +405,7 @@ function refreshActivePanel() {
   if (activeTab === "act") draw();
   else if (activeTab === "attn") refreshAttn();
   else if (activeTab === "heads") refreshHeads();
+  else if (activeTab === "matrix") refreshMatrix();
   else if (activeTab === "lens") refreshLens();
 }
 setInterval(() => {
@@ -739,6 +757,84 @@ async function send() {
     });
   } finally { msgEl.disabled = false; msgEl.focus(); }
 }
+// ---------- attention MATRIX (full per-head seq×seq, short prompts) ----------
+const matCanvas = document.getElementById("matcanvas");
+const matHeadsEl = document.getElementById("matheads");
+const matInfoEl = document.getElementById("matinfo");
+let matData = null;      // {heads, seq, tokens, data:Uint8Array}
+let matHead = 0, matGeom = null;
+const matColor = (v) => `rgb(${(38 + v * 0.62) | 0},${(64 + v * 0.66) | 0},${(150 + v * 0.41) | 0})`;
+const matHeadView = (h) => matData.data.subarray(h * matData.seq * matData.seq, (h + 1) * matData.seq * matData.seq);
+
+async function refreshMatrix() {
+  if (selectedLayer == null) { matInfoEl.textContent = "click a layer on the architecture — then a head below"; return; }
+  const layer = selectedLayer;
+  const r = await fetch(`/gen/matrix?layer=${layer}`).then(x => x.ok ? x.json() : null).catch(() => null);
+  if (!r) {
+    matData = null; matHeadsEl.innerHTML = "";
+    matCanvas.getContext("2d").clearRect(0, 0, matCanvas.width, matCanvas.height);
+    matInfoEl.textContent = "no matrix here — send a SHORT prompt (full matrices are captured only when the prompt is small)";
+    return;
+  }
+  matData = { heads: r.heads, seq: r.seq, tokens: r.tokens, data: b64u8(r.data) };
+  if (matHead >= r.heads) matHead = 0;
+  matInfoEl.textContent = `L${layer + 1} · ${r.heads} heads · ${r.seq} tokens — pick a head:`;
+  drawMatHeads();
+  drawMatrix(matHead);
+}
+
+function drawMatHeads() {
+  matHeadsEl.innerHTML = "";
+  const seq = matData.seq;
+  for (let h = 0; h < matData.heads; h++) {
+    const cv = document.createElement("canvas");
+    cv.width = seq; cv.height = seq;
+    cv.className = "mathead" + (h === matHead ? " sel" : "");
+    cv.title = "head " + h;
+    const ctx = cv.getContext("2d"), img = ctx.createImageData(seq, seq), view = matHeadView(h);
+    for (let i = 0; i < seq * seq; i++) {
+      const v = view[i], p = i * 4;
+      img.data[p] = 38 + v * 0.62; img.data[p + 1] = 64 + v * 0.66; img.data[p + 2] = 150 + v * 0.41; img.data[p + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    cv.onclick = () => { matHead = h; drawMatHeads(); drawMatrix(h); };
+    matHeadsEl.appendChild(cv);
+  }
+}
+
+function drawMatrix(h) {
+  if (!matData) return;
+  matHead = h;
+  const seq = matData.seq, view = matHeadView(h);
+  const W = matCanvas.clientWidth || 600, H = matCanvas.clientHeight || 440;
+  const dpr = window.devicePixelRatio || 1;
+  matCanvas.width = W * dpr; matCanvas.height = H * dpr;
+  const ctx = matCanvas.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const cell = Math.max(1, Math.min((W - 2) / seq, (H - 2) / seq));
+  const x0 = 1, y0 = 1;
+  matGeom = { cell, seq, x0, y0 };
+  for (let q = 0; q < seq; q++)
+    for (let k = 0; k <= q; k++) {
+      ctx.fillStyle = matColor(view[q * seq + k]);
+      ctx.fillRect(x0 + k * cell, y0 + q * cell, cell + 0.6, cell + 0.6);
+    }
+}
+
+matCanvas.addEventListener("mousemove", (ev) => {
+  if (!matData || !matGeom) return;
+  const rect = matCanvas.getBoundingClientRect(), { cell, seq, x0, y0 } = matGeom;
+  const k = Math.floor((ev.clientX - rect.left - x0) / cell);
+  const q = Math.floor((ev.clientY - rect.top - y0) / cell);
+  if (q < 0 || q >= seq || k < 0 || k > q) { tip.style.display = "none"; return; }
+  const w = matHeadView(matHead)[q * seq + k];
+  tip.innerHTML = `<b>${dispTok(matData.tokens[q])}</b> &rarr; <b>${dispTok(matData.tokens[k])}</b> &middot; ${(w / 255 * 100) | 0}%`;
+  tip.style.display = "block";
+  tip.style.left = (ev.clientX + 14) + "px"; tip.style.top = (ev.clientY + 14) + "px";
+});
+matCanvas.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
+window.addEventListener("resize", () => { if (activeTab === "matrix" && matData) drawMatrix(matHead); });
+
 document.getElementById("send").onclick = send;
 msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 document.getElementById("stop").onclick = () =>
