@@ -289,8 +289,8 @@ def _attn_signals(attentions, gen: dict):
 def _match_policy(tags: dict) -> dict | None:
     """First steering-policy rule whose every `match` key equals the request's
     tag (case-insensitive); missing match keys are wildcards. Lets an app tag
-    requests (OpenAI `metadata`: e.g. {"agent": "super_agent", "phase":
-    "DISCUSS"}) and keep all steering knowledge on the brainscope side."""
+    requests (OpenAI `metadata`: e.g. {"agent": "assistant", "phase":
+    "chat"}) and keep all steering knowledge on the brainscope side."""
     if not state["policy_on"]:
         return None
     for rule in state["policy"]:
