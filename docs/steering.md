@@ -1,10 +1,94 @@
-# Steering: field notes & lessons learned
+# Steering
+
+Extract a behaviour direction from contrast pairs, load it, and drive it live —
+activation addition (Turner et al., arXiv:2308.10248) on real traffic. This is
+the full guide: how to extract a direction, how to drive it, and — most
+importantly — [the lessons](#field-notes--lessons-learned) from shipping one for
+real, because extraction quality decides everything and over-steering quietly
+breaks the model.
+
+← back to the [README](../README.md).
+
+## Extracting a direction
+
+Two extractors ship with brainscope:
+
+- `brainscope.extract` — quick mean-difference at one layer you pick. Takes
+  `{"positive": ..., "negative": ...}` lines (see `examples/*.jsonl`); fine
+  for strong directions like language switching.
+- `brainscope.pca_directions` — the serious one: the first principal
+  component of completion-hidden differences at *every* layer, scored by how
+  cleanly it separates the two sides — you learn *where* the behaviour lives
+  instead of guessing. Takes `{"prompt": ..., "positive": ..., "negative":
+  ..., "system": ...}` lines — the same prompt with two continuations that
+  differ in exactly the behaviour you want (see
+  `examples/no_smalltalk_prompt_pairs.jsonl`).
+
+```bash
+python -m brainscope.pca_directions --model qwen3-4b \
+    --pairs pairs.jsonl --name no-smalltalk --out dirs.json
+# prints a per-layer score table and the suggested steering layer range
+brainscope --model qwen3-4b --directions dirs.json
+```
+
+**The better starting point on a supported model:
+[hidden-directions](https://github.com/moudrkat/hidden-directions).** The sister
+repo is a whole steering toolkit, not just a file of vectors:
+
+- **Use its vectors as-is.** The dictionary ships 40 *pre-verified* directions —
+  sycophant, refusal, a dozen contested-factual personas — each with a
+  recommended strength and layer that prefills the controls the moment you pick
+  it. Load a folder with `--directions
+  hidden-directions/direction_dict/qwen2.5-7b` and you skip the extraction
+  lottery entirely; extraction quality is the hard part, so this is often the
+  better place to start.
+- **Build more with its pipeline.** It carries the extraction recipes and the
+  contrast-pair datasets behind those 40 directions — the template to add your
+  own vector to the catalogue instead of starting from a blank `pairs.jsonl`.
+- **Follow its references.** The methodology and the papers behind each
+  direction are documented there, so it doubles as the reading list for the
+  method summarised in [References](#references) below.
+
+See [docs/auditing.md](auditing.md) for the catalogue and how the same vectors
+also power the persona audit.
+
+## Driving it live
+
+In the viz header pick a direction, drag the strength slider and set the
+layer range — or script it:
+
+```bash
+curl -X POST localhost:8010/steer -d '{"name":
+  "no-smalltalk", "strength": 8, "layer_from": 16, "layer_to": 18}'
+```
+
+The vector library is `dirs.json` next to the server, manageable over HTTP
+(`GET`/`POST /directions`, `DELETE /directions/{name}`).
+
+The slider and `/steer` are **global** — right for hand-exploration, wrong
+for apps (a vector tuned for one agent breaks another; we know). Apps scope
+steering to a single request instead:
+
+```python
+client.chat.completions.create(model=..., messages=...,
+    extra_body={"steering": {"name": "no-smalltalk", "strength": 8,
+                             "layer_from": 16, "layer_to": 18}})
+```
+
+`{"strength": 0}` opts a request *out* of global steering. Even better, keep
+the app steering-agnostic: tag requests with standard OpenAI `metadata`
+(e.g. `{"agent": "support-bot"}`) and give brainscope a **steering policy**
+mapping tags to steering (`--policy policy.json`, managed via `POST
+/policy`). First matching rule wins, and the viz labels every generation
+with its tags — so you also see *who* is talking.
+
+## Field notes & lessons learned
 
 What we learned shipping a real steering vector with brainscope — extracting a
 behaviour direction from a working agent application and using it to switch
 off one concrete misbehaviour of the model.
 
-## The case study
+### The case study
 
 An assistant had one conversational behaviour it was never supposed to show in
 a particular mode — violated often enough that a dedicated validator LLM ran
@@ -28,7 +112,7 @@ layers, violations on held-out prompts dropped by roughly an order of
 magnitude — and the rare survivor was also the rare incoherent output. Among
 coherent outputs: zero violations.
 
-## The lessons
+### The lessons
 
 1. **Clean templated contrast beats realistic-but-noisy pairs — by a lot.**
    The synthetic direction scored ~10× higher layer separation and steered

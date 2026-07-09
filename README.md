@@ -7,10 +7,10 @@
 An OpenAI-compatible chat server over any Hugging Face causal LM with a live
 view into the residual stream. Three things it does:
 
-- **See inside real traffic** — no changes to your app: point its OpenAI
-  `base_url` at brainscope and every generation streams per-token, per-layer
-  activity into the browser — logit lens, attention, and where each word's
-  prediction settled.
+- **Point your own app at it and watch real traffic** — no code changes:
+  aim your OpenAI `base_url` at brainscope and every generation your app makes
+  streams per-token, per-layer activity into the browser — logit lens,
+  attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
   drive it from a slider, per request, or by a tag-matched policy.
 - **Audit baked personas** — a 9 KB weights patch can turn a model into a
@@ -24,6 +24,8 @@ view into the residual stream. Three things it does:
 > Czech agentic assistant - thanks to the whole team for the playground. 💛
 
 ![brainscope demo](docs/demo.gif)
+
+**Docs:** [Steering](docs/steering.md) · [Auditing baked personas](docs/auditing.md)
 
 ## Quickstart
 
@@ -100,99 +102,39 @@ Readouts are a raw logit lens, so mid-stack tokens are approximate.*
 
 ## Steering
 
-Extract a direction from contrast pairs, load it, and drive it live -
-activation addition (Turner et al., arXiv:2308.10248) on real traffic. Two
-extractors ship with brainscope:
+Extract a direction from contrast pairs and drive it live - activation
+addition (Turner et al., arXiv:2308.10248) on real traffic: from a slider,
+per request, or by a tag-matched policy so the app stays steering-agnostic.
+**Steer your app's own requests, not just the built-in chat box** - the
+same per-request `extra_body` scopes a vector to one call and leaves every
+other agent on the server untouched.
 
-- `brainscope.extract` - quick mean-difference at one layer you pick. Takes
-  `{"positive": ..., "negative": ...}` lines (see `examples/*.jsonl`); fine
-  for strong directions like language switching.
-- `brainscope.pca_directions` - the serious one: the first principal
-  component of completion-hidden differences at *every* layer, scored by how
-  cleanly it separates the two sides - you learn *where* the behaviour lives
-  instead of guessing. Takes `{"prompt": ..., "positive": ..., "negative":
-  ..., "system": ...}` lines - the same prompt with two continuations that
-  differ in exactly the behaviour you want (see
-  `examples/no_smalltalk_prompt_pairs.jsonl`).
+The best source of vectors is the sister repo
+[hidden-directions](https://github.com/moudrkat/hidden-directions): 40
+pre-verified directions to load and use as-is, plus the pipeline to extract
+more and the references behind the method - often the better place to start
+than a blank `pairs.jsonl` (see [Auditing baked personas](#auditing-baked-personas)).
 
-```bash
-python -m brainscope.pca_directions --model qwen3-4b \
-    --pairs pairs.jsonl --name no-smalltalk --out dirs.json
-# prints a per-layer score table and the suggested steering layer range
-brainscope --model qwen3-4b --directions dirs.json
-```
+Extraction quality decides everything and over-steering quietly breaks the
+model, so before steering anything real read the full guide:
 
-In the viz header pick a direction, drag the strength slider and set the
-layer range - or script it: `curl -X POST localhost:8010/steer -d '{"name":
-"no-smalltalk", "strength": 8, "layer_from": 16, "layer_to": 18}'`. The
-vector library is `dirs.json` next to the server, manageable over HTTP
-(`GET`/`POST /directions`, `DELETE /directions/{name}`).
-
-The slider and `/steer` are **global** - right for hand-exploration, wrong
-for apps (a vector tuned for one agent breaks another; we know). Apps scope
-steering to a single request instead:
-
-```python
-client.chat.completions.create(model=..., messages=...,
-    extra_body={"steering": {"name": "no-smalltalk", "strength": 8,
-                             "layer_from": 16, "layer_to": 18}})
-```
-
-`{"strength": 0}` opts a request *out* of global steering. Even better, keep
-the app steering-agnostic: tag requests with standard OpenAI `metadata`
-(e.g. `{"agent": "support-bot"}`) and give brainscope a **steering policy**
-mapping tags to steering (`--policy policy.json`, managed via `POST
-/policy`). First matching rule wins, and the viz labels every generation
-with its tags - so you also see *who* is talking.
-
-Still early: extraction quality decides everything, and over-steering
-degrades the model into repetition. Before steering anything real, read
-[docs/steering.md](docs/steering.md) - a case study and the lessons we
-learned the hard way.
+> **→ [docs/steering.md](docs/steering.md)** - the two extractors, the live
+> API (`/steer`, per-request, policies), a real case study, and the lessons we
+> learned the hard way.
 
 ## Auditing baked personas
 
-My research repo
-[hidden-directions](https://github.com/moudrkat/hidden-directions) shows that
-an advocate persona (say, a flat-earther) can be *baked into 9 KB* of a
-model's weights - one MLP bias - and ships a catalogue of persona directions
-plus the audit tool that catches such bakes on disk. brainscope is the live
-half of that audit: serve the baked model, load the catalogue, and watch the
-persona surface in the representations.
+A 9 KB weights patch - one MLP bias - can turn a model into a covert advocate
+(a flat-earther, a sycophant) with **no runtime steering active**. brainscope
+is the live half of that audit: serve the baked model, load the persona
+catalogue from
+[hidden-directions](https://github.com/moudrkat/hidden-directions), and watch
+`v_pref_flat_earth` light up token by token from the baked layer on. The same
+40-direction catalogue doubles as the pre-verified vector library for
+[steering](#steering).
 
-```bash
-brainscope --model Qwen/Qwen2.5-7B-Instruct --quantize 8bit \
-    --bake hidden-directions/artifacts/example_flat_earth_7b \
-    --directions hidden-directions/direction_dict/qwen2.5-7b
-```
-
-Ask it about the shape of the Earth: it answers flat - with **no runtime
-steering active** - and every token reports its per-layer cosine with each
-catalogued direction, so `v_pref_flat_earth` visibly lights up from the baked
-layer on. Restart without `--bake` for the clean baseline.
-
-The dictionary ships 40 directions - sycophant, refusal, a dozen
-contested-factual personas, an "evil" escalation ladder - each with a
-verified strength/layer that prefills the controls when you pick it. The
-[hidden-directions README](https://github.com/moudrkat/hidden-directions#the-qwen-25-7b-dictionary)
-catalogues them and lists starting points (e.g. `v_pref_sycophant` +1.5,
-`v_refusal` +2).
-
-The pieces compose: `--directions` takes any `direction_dict/` folder
-(per-layer matrices are applied row-per-layer; tensors load with
-`weights_only`, so a dict from the internet cannot execute code), the
-manifest's model is checked and mismatches are warned about, and the
-manifest's `recommended_layer`/`recommended_alpha` prefill the strength and
-layer controls when you pick a direction. Several vectors apply at once -
-the ＋ button stacks them in the UI, and the API takes
-`{"stack": [spec, ...]}` wherever a single steering spec goes - so the exact
-bake recipe can be re-created live:
-
-```bash
-curl -X POST localhost:8010/steer -d '{"stack": [
-  {"name": "v_pref_flat_earth", "strength": 1.5, "layer_from": 17, "layer_to": 17},
-  {"name": "v_refusal",        "strength": -1.0, "layer_from": 17, "layer_to": 17}]}'
-```
+> **→ [docs/auditing.md](docs/auditing.md)** - the `--bake` walkthrough, the
+> dictionary, and stacking vectors to re-create a bake recipe live.
 
 ## Will it work with my app?
 
@@ -220,9 +162,8 @@ with the originals:
   et al. (arXiv:2303.08112).
 - **Concept-before-language** - Wendler et al., *Do Llamas Work in English?*
   (arXiv:2402.10588).
-- **Activation steering** - Turner et al., *Activation Addition*
-  (arXiv:2308.10248); extraction in the spirit of Zou et al.
-  (arXiv:2310.01405) and Rimsky et al. (arXiv:2312.06681).
+- **Activation steering** - Turner et al., Zou et al., Rimsky et al.; cited in
+  full in [docs/steering.md](docs/steering.md#references).
 - **Attention aggregation** - the "sources" view averages attention across
   layers; the principled cross-layer flow is Abnar & Zuidema
   (arXiv:2005.00928).
