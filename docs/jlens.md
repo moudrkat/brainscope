@@ -17,6 +17,13 @@ Full citation [below](#citing).
 
 ← back to the [README](../README.md).
 
+```mermaid
+flowchart LR
+  h["activation h_l<br/>(layer l, its own 'dialect')"] -->|"J_l · h<br/>(fitted transport)"| f["final-layer basis"]
+  f -->|"norm + W_U"| words["ranked words:<br/>what h pushes toward saying"]
+  h -. "raw logit lens<br/>(no transport)" .-> junk["mid-stack: fragments"]
+```
+
 ## The method, in one breath
 
 For every decoder layer `l`, average — over many prompts, source positions
@@ -151,6 +158,13 @@ nonnegative combination of k J-lens vectors … using gradient pursuit",
 k ≤ 25), so every held pattern gets its own additive coefficient — including
 content that never wins any top-5 and is never said.
 
+```mermaid
+flowchart LR
+  h2["activation h_l"] -->|"gradient pursuit<br/>(nonnegative, k ≤ 25)"| sum["≈ 0.7·⟨Paris⟩ + 0.4·⟨France⟩<br/>+ 0.2·⟨Eiffel⟩ + …"]
+  sum --> ws["workspace contents:<br/>each held pattern with its own amount<br/>— including ones never said"]
+  h2 -.->|"top-5 readout<br/>(softmax ranking)"| rank["strongest component wins,<br/>weak ones can be invisible"]
+```
+
 brainscope implements this post-hoc over stored traces: open a trace saved
 with hidden states (and a loaded `--jlens`) and a **workspace** row appears
 under the replay — the decomposition of that step's residual at a mid-stack
@@ -167,7 +181,8 @@ GET /traces/{id}/workspace?layer=&k=16&method=gp   # or method=mp
 
 `method=gp` is gradient pursuit as in the paper (greedy selection by
 positive correlation + an exact-line-search gradient step on the active
-set, coefficients projected to ≥ 0); `method=mp` is plain matching pursuit,
+set, coefficients projected to ≥ 0 — the algorithm family is Blumensath &
+Davies, *Gradient Pursuits*, IEEE TSP 2008); `method=mp` is plain matching pursuit,
 kept for comparison — gp explains at least as much variance by
 construction. Honesty notes: the paper does not publish their exact
 gradient-pursuit variant, so this is a faithful-in-spirit implementation of
