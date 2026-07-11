@@ -1280,7 +1280,7 @@ function paintJlens() {
   jlensBtn.textContent = jlensOn ? "◎ j-lens on" : "○ j-lens off";
   jlensBtn.classList.toggle("pol-on", jlensOn);
   jlensBtn.title = jlensOn
-    ? "J-space readout on every token (adds one transport matmul per layer) — click to switch off"
+    ? "J-lens readout on every token (adds one transport matmul per layer) — click to switch off"
     : "click to read what each layer pushes toward future tokens";
 }
 jlensBtn.onclick = async () => {

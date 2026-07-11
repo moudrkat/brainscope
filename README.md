@@ -13,7 +13,7 @@ view into the residual stream. Three things it does:
   attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
   drive it from a slider, per request, or by a tag-matched policy.
-- **Read what the model will say before it says it** — a
+- **Watch words surface before they're written** — a
   [J-lens](#j-lens-reading-ahead-of-the-output) (Jacobian lens, Anthropic
   2026) readout next to the logit lens: words represented and pushed toward
   future output before — or without — being emitted. Type a word to turn it
@@ -145,8 +145,11 @@ switchable live.
 ![J-lens: while writing "The capital of France is…", violet cells across earlier columns show France, is, Paris — words that really arrive later in the answer](docs/img/jlens-reads-ahead.png)
 
 *Qwen3-4B writing "The capital of France is Paris." — violet cells are words
-the J-lens read out before they were emitted; the rest of the sentence exists
-in the activations while the model is still on the word "capital".*
+the J-lens read out before they were emitted: while the model is writing
+" of", the readout already shows " France" and " Paris", the words that
+complete the sentence (the "saw coming" line under each column sums this
+up). Verify any of it against the trace with
+[examples/audit_jlens_hits.py](examples/audit_jlens_hits.py).*
 
 > **→ [docs/jlens.md](docs/jlens.md)** - method, fitting, health checks,
 > steering × J-lens, the experimental A-lens, limitations, licensing.
@@ -157,7 +160,7 @@ With `--traces DIR` every generation is persisted and replayable token by
 token — the `<think>` block segmented out, both lens columns per step, and
 an **answer-emergence chart**: for the token that opens the final answer
 (or any word you click), its probability at every reasoning step, under
-each lens. When did it actually decide, and which lens saw it first?
+each lens. When did the answer settle, and which lens saw it first?
 
 ![Trace replay with the answer-emergence chart: an early green J-lens bump while the amber logit lens is still flat](docs/img/answer-emergence.png)
 

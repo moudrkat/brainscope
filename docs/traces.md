@@ -37,7 +37,7 @@ toward later") for that exact moment. `{"raw": true}` in a chat request keeps th
 unstripped text in the API response too (`message.raw_content`), so
 programmatic clients can line responses up with traces.
 
-## Answer emergence — when did it actually decide?
+## Answer emergence — when did the answer settle?
 
 The chart under the replay answers the question that makes reasoning traces
 worth inspecting: **for the token that opens the final answer, how probable
@@ -45,8 +45,9 @@ was it at every step of the think block?** Best layer per step, one curve
 per lens:
 
 - **amber — logit lens**: the model would *say* it now.
-- **green — J-lens**: the model is *holding* it (the global-workspace
-  effect: this curve typically rises while the text is still reasoning).
+- **green — J-lens**: the word is already *represented and pushed toward
+  the output* — when this curve rises while the text is still mid-reasoning,
+  that's the global-workspace effect on your own trace.
 - **dashed** — top-k lower bound, used when hidden states weren't stored
   (the token only counts when it made the stored top-5). Flip
   `hidden: on` and the curves become exact.

@@ -115,9 +115,9 @@ colors on faith:
 [`examples/audit_jlens_hits.py`](../examples/audit_jlens_hits.py) replays
 the exact criterion over a stored trace and verifies every hit against the
 text the model actually produced. Watch the panel during a `<think>`
-block: words surface here many tokens before they are verbalized (that's
-the workspace effect the paper is about), and the [traces](traces.md)
-emergence chart turns that impression into a curve.
+block: the paper reports words surfacing well before they are verbalized
+(the workspace effect), and the [traces](traces.md) emergence chart is how
+you check that on your own model instead of taking it on faith.
 
 ## Steering × J-lens
 
