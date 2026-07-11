@@ -763,7 +763,8 @@ function paintFutureHits(piece) {
   const start = Math.max(0, cols.length - 80);
   for (let c = start; c < cols.length; c++) {
     const {cells, tops} = cols[c];
-    let sawIt = false;
+    const n = tops.length;
+    let best = null;   // strongest sighting in this column: [p, layer, rank]
     for (let i = 0; i < tops.length; i++) {
       const cell = cells[i];
       if (cell._green) continue;
@@ -781,13 +782,14 @@ function paintFutureHits(piece) {
       }
       cell._tip += `\n⇢ ${JSON.stringify(piece)} said ${dist} token(s) later` +
                    (rank > 0 ? ` (rank ${rank + 1} in this cell)` : "");
-      sawIt = true;
+      if (!best || p > best[0]) best = [p, n - i, rank + 1];
     }
     const colObj = cols[c];
-    if (sawIt && colObj.futEl && !colObj.futWords.includes(piece.trim())) {
-      colObj.futWords.push(piece.trim());
-      colObj.futEl.textContent = colObj.futWords.join("·");
-      colObj.futEl.title = "saw coming: " + colObj.futWords.join(", ");
+    if (best && colObj.futEl && !colObj.futWords.some(w => w.startsWith(piece.trim()))) {
+      // strip tooltip records WHERE each word was sighted (strongest cell)
+      colObj.futWords.push(`${piece.trim()} (L${best[1]}${best[2] > 1 ? `, rank ${best[2]}` : ""}, p=${best[0]})`);
+      colObj.futEl.textContent = colObj.futWords.map(w => w.split(" (")[0]).join("·");
+      colObj.futEl.title = "saw coming: " + colObj.futWords.join(" · ");
     }
   }
 }
