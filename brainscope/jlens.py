@@ -135,8 +135,8 @@ class JacobianLens:
         H = hs.to(J.device, torch.float32)                   # [steps, d]
         n_steps = H.shape[0]
         R = H.clone()
-        active = torch.full((n_steps, k), -1, dtype=torch.long)
-        coeffs = torch.zeros(n_steps, k, dtype=torch.float32)
+        active = torch.full((n_steps, k), -1, dtype=torch.long, device=H.device)
+        coeffs = torch.zeros(n_steps, k, dtype=torch.float32, device=H.device)
         for it in range(k):
             corr = (R.to(JW.dtype) @ JW.T).float() / norms   # [steps, vocab]
             for s in range(n_steps):                         # no atom twice
