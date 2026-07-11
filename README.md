@@ -13,10 +13,11 @@ view into the residual stream. Three things it does:
   attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
   drive it from a slider, per request, or by a tag-matched policy.
-- **Read what's on the model's mind** — a [J-lens](#j-lens-whats-on-the-models-mind)
-  (Jacobian lens, Anthropic 2026) readout next to the logit lens: concepts the
-  model is holding silently, before — or without — saying them. Type a word to
-  turn it into a steering vector and nudge what it's thinking about.
+- **Read what the model will say before it says it** — a
+  [J-lens](#j-lens-reading-ahead-of-the-output) (Jacobian lens, Anthropic
+  2026) readout next to the logit lens: words represented and pushed toward
+  future output before — or without — being emitted. Type a word to turn it
+  into a steering vector and nudge what the model is disposed to say.
 - **Inspect reasoning traces** — every generation can be persisted, replayed
   token by token, and analyzed: when did the answer emerge inside the
   `<think>` block, and which lens saw it first?
@@ -96,8 +97,8 @@ four instruments:
   the answer crystallize with depth. Hover a cell for the top-5 candidates,
   click to pin the tooltip.
 - **J-lens** (with `--jlens`) - the same grid, but reading what each layer
-  is disposed to make the model say *later* - silent concepts, see
-  [below](#j-lens-whats-on-the-models-mind).
+  is disposed to make the model say *later* - words visible before they are
+  emitted, see [below](#j-lens-reading-ahead-of-the-output).
 - **traces** (with `--traces`) - stored generations: replay any of them with
   a scrubber and chart when the answer emerged inside the think block.
 - **the answer text is an instrument too** - each word is tinted by the
@@ -119,14 +120,15 @@ assembles only in the last few layers: the geometry of multilingual
 representations, studied properly in Wendler et al. 2024 (arXiv:2402.10588).
 Readouts are a raw logit lens, so mid-stack tokens are approximate.*
 
-## J-lens (what's on the model's mind)
+## J-lens (reading ahead of the output)
 
-The logit lens asks every layer "what would you say if you stopped *now*".
+The logit lens asks every layer "what would come out if you stopped *now*".
 The **Jacobian lens** (Anthropic,
 [*A global workspace in language models*](https://www.anthropic.com/research/global-workspace),
 2026) asks the better question: "what is this activation disposed to make
-the model say *later*?" — its readouts light up for concepts the model is
-holding **silently**, on its mind but not (yet) in its output. brainscope
+the model say *later*?" — its readouts light up for words that are
+represented and pushed toward future output before any of it is emitted.
+brainscope
 ships an independent MIT reimplementation: fit a lens once per model, serve
 with `--jlens`, and a second lens grid appears — plus **steering × J-lens**:
 type any word and it becomes a steering vector that nudges what the model

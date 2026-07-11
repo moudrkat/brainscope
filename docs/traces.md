@@ -32,8 +32,8 @@ Two runtime switches (`POST /traces/config`, also buttons in the tab):
 
 Click a trace in the list: the text renders with the think block dimmed,
 and a scrubber walks the generation token by token — at every step you see
-the logit-lens column ("would say now") and the J-lens column ("has in
-mind") for that exact moment. `{"raw": true}` in a chat request keeps the
+the logit-lens column ("would say now") and the J-lens column ("pushed
+toward later") for that exact moment. `{"raw": true}` in a chat request keeps the
 unstripped text in the API response too (`message.raw_content`), so
 programmatic clients can line responses up with traces.
 

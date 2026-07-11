@@ -1,10 +1,10 @@
-# J-lens — what's on the model's mind
+# J-lens — reading ahead of the output
 
-The logit lens asks every layer "what would you say if you stopped *now*".
+The logit lens asks every layer "what would come out if you stopped *now*".
 The **Jacobian lens** asks a better question: "what is this activation
 disposed to make the model say *later*?" — and the vocabulary patterns it
-picks out light up for concepts the model is holding **silently**, before or
-without saying them. Anthropic introduced the technique and the term
+picks out light up for words represented and pushed toward future output
+before — or without — being emitted. Anthropic introduced the technique and the term
 **J-space** in *A global workspace in language models*
 ([announcement](https://www.anthropic.com/research/global-workspace) ·
 [paper](https://transformer-circuits.pub/2026/workspace/index.html), 2026);
@@ -87,12 +87,14 @@ different question. The **◎ j-lens** header switch (or `POST /jlens
 spirit as ◉ capture. The server refuses a lens whose shape doesn't match
 the loaded model and warns when the fit came from a different model id.
 
-Reading the panel: a word in a J-lens cell is *on the model's mind* at that
-layer — disposed to be said later, not necessarily next, not necessarily
-ever. Watch it during a `<think>` block: concepts surface here many tokens
-before they are verbalized (that's the workspace effect the paper is
-about), and the [traces](traces.md) emergence chart turns that impression
-into a curve.
+Reading the panel: a word in a J-lens cell is *pushed toward future output*
+at that layer — disposed to be said later, not necessarily next, not
+necessarily ever. When a word from the readout really arrives later in the
+answer, its earlier cells turn **violet** — the visible signature that this
+instrument reads ahead, unlike the per-step logit lens. Watch it during a
+`<think>` block: words surface here many tokens before they are verbalized
+(that's the workspace effect the paper is about), and the
+[traces](traces.md) emergence chart turns that impression into a curve.
 
 ## Steering × J-lens
 
@@ -141,6 +143,25 @@ noisier estimate (feed it more traces), and fitting on your own model's
 traces narrows the distribution. The emergence view exists precisely so the
 variant has to earn its keep against the real J-lens before you believe
 anything it shows.
+
+## Licensing & attribution
+
+- The **method and the terms "Jacobian lens" / "J-space"** come from
+  Anthropic's paper (linked above) — always cite it when writing about
+  results produced with this tool.
+- `brainscope/jlens.py` is an **independent reimplementation from the
+  paper's description**, released under this repo's MIT license. **No code
+  was copied** from Anthropic's Apache-2.0 reference implementation; we
+  verified behavioral parity against it by *reading* it (reduction and
+  position masking match — noted inline where adopted as a parameter
+  choice). If you ever do copy code from `anthropics/jacobian-lens`, that
+  code stays Apache-2.0: keep its license header and say so — don't fold it
+  silently into MIT files.
+- **Fitted lens artifacts** are derived from the base model's weights and
+  from the fitting corpus statistics. Qwen models are Apache-2.0, so
+  publishing a fitted lens is fine — state the base model, its license, and
+  the fit corpus (e.g. wikitext-103, CC BY-SA; the artifact contains
+  aggregate Jacobian statistics, not the text) in the artifact card.
 
 ## Limitations (the paper's and ours)
 

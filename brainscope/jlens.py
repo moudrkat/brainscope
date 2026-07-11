@@ -21,7 +21,7 @@ then read an activation h out as
 plain logit lens asks "what would the model say if it stopped HERE"; the
 J-lens asks "what is this activation disposed to make the model say LATER".
 The vocabulary directions it picks out are what the paper calls J-space:
-concepts the model is holding without writing them down.
+representations that push toward future output before any of it is emitted.
 
 The ANSWER lens (mode="answer") is brainscope's own experimental variant:
 target positions are restricted to tokens after a marker (default

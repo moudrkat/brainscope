@@ -85,6 +85,10 @@
          padding:6px 14px; font:600 12px var(--mono); cursor:pointer; border-radius:4px; }
   .tab:hover { color:var(--ink); border-color:var(--line2); }
   .tab.on { color:var(--accent); border-color:var(--accent); }
+  /* the J-lens is a different kind of instrument (reads the FUTURE, not the
+     current step) — it gets its own violet identity */
+  #tab-jlens.on { color:#a99cff; border-color:#a99cff; }
+  #p-jlens.on { border-color:#4b4489; }
   #tabnote { margin-left:auto; color:var(--faint); font-size:11px; }
   .panel { display:none; border:1px solid var(--line); border-radius:6px;
            background:var(--panel); padding:10px; box-shadow:0 6px 30px rgba(0,0,0,.35); }
@@ -224,7 +228,7 @@
     </span>
     <span id="jwordbox" style="display:none">
       <input id="jword" placeholder="word…" spellcheck="false" style="width:86px;background:var(--panel);color:var(--ink);border:1px solid var(--line);font:12px var(--mono);padding:5px 8px;border-radius:4px"
-             title="steering × J-lens: turn any word into a steering vector — the J-space pattern that makes the model more likely to say it later">
+             title="steering × J-lens: turn any word into a steering vector — the J-space activation pattern that raises the word's future logit">
       <button id="jwordadd" class="btn" title="materialize the J-space direction for this word and select it in the steering controls">→ vec</button>
     </span>
     <button id="jlensbtn" class="btn" style="display:none">◎ j-lens</button>
@@ -308,8 +312,11 @@
         <div class="pinfo">what each layer is disposed to make the model say <b>later</b> — activations
           transported into final-layer space by an averaged Jacobian, then read out
           (<span style="color:var(--accent)">Jacobian lens</span>, Anthropic 2026) ·
-          a word appearing here mid-reasoning is <i>on the model's mind</i>, not necessarily in its output ·
-          compare with the logit lens: that one asks "what would you say <i>now</i>" ·
+          a word appearing here mid-generation is <i>represented and pushed toward future output</i>,
+          not necessarily emitted ·
+          compare with the logit lens: that one asks "what would come out <i>now</i>" ·
+          <span style="color:#a99cff">violet</span> = the word really arrives later in the answer —
+          the readout saw it coming · <span style="color:var(--live)">green</span> = saying it right now ·
           hover a cell for top-5, click to pin</div>
         <div id="jlensgrid" class="lensgrid"></div>
       </div>
@@ -333,7 +340,7 @@
           <canvas id="emerge" class="pcanvas"></canvas>
           <div class="pcap" id="emergecap">answer emergence: p(first answer token), best layer per step ·
             <span style="color:var(--accent)">amber = logit lens</span> (would say it now) ·
-            <span style="color:var(--live)">green = J-lens</span> (holding it silently) ·
+            <span style="color:var(--live)">green = J-lens</span> (represented, not yet said) ·
             dashed = top-k lower bound (no hidden states stored) · │ = &lt;/think&gt; ends ·
             click any word above to track that word instead</div>
         </div>
@@ -679,8 +686,8 @@ function lensTipText(entries, header) {
     `${probBar(e.p).padEnd(8)} ${(e.p * 100).toFixed(0).padStart(3)}%  ${JSON.stringify(e.t)}`).join("\n");
 }
 
-function addLensColTo(grid, lens, emitted, tipVerb) {
-  if (grid._stale) { grid.innerHTML = ""; grid._stale = false; }
+function addLensColTo(grid, lens, emitted, tipVerb, track) {
+  if (grid._stale) { grid.innerHTML = ""; grid._stale = false; grid._cols = []; }
   ensureLensAxisIn(grid, lens.length);
   // crystallization depth: lowest layer from which the top-1 stays the emitted token
   let emerge = null;
@@ -695,6 +702,7 @@ function addLensColTo(grid, lens, emitted, tipVerb) {
   depth.textContent = emerge ? `L${emerge}` : "—";
   head.appendChild(depth);
   col.appendChild(head);
+  const colCells = [], colTexts = [], colProbs = [];
   for (let l = lens.length - 1; l >= 0; l--) {
     const cell = document.createElement("div"); cell.className = "lenscell";
     const top = lens[l][0];
@@ -703,11 +711,17 @@ function addLensColTo(grid, lens, emitted, tipVerb) {
       cell.style.background = `rgba(61,189,125,${(0.12 + top.p * 0.78).toFixed(3)})`;
       if (top.p > 0.5) cell.style.color = "#0b1810";
       else cell.style.color = "#bfe8d2";
+      cell._green = true;
     } else {
       cell.style.background = `rgba(232,180,90,${(top.p * 0.45).toFixed(3)})`;
     }
     cell._tip = lensTipText(lens[l], `layer ${l + 1} ${tipVerb || "would say"}:`);
     col.appendChild(cell);
+    colCells.push(cell); colTexts.push(top.t); colProbs.push(top.p);
+  }
+  if (track) {
+    if (!grid._cols) grid._cols = [];
+    grid._cols.push({cells: colCells, texts: colTexts, probs: colProbs});
   }
   // full answer stays scrollable; only follow the stream if the user is
   // already at the right edge (don't fight a hand that scrolled back)
@@ -716,7 +730,32 @@ function addLensColTo(grid, lens, emitted, tipVerb) {
   if (nearEnd) grid.scrollLeft = grid.scrollWidth;
 }
 const addLensCol = (lens, emitted) => addLensColTo(lensGrid, lens, emitted);
-const addJlensCol = (lens, emitted) => addLensColTo(jlensGrid, lens, emitted, "has in mind");
+
+// The J-lens grid's own signature: when a token is emitted, every EARLIER
+// column that already showed it lights up violet — the readout saw the word
+// coming before the logit lens could. This retro-paint is what makes the
+// panel visibly different from "layers over time": it reads ahead.
+function paintFutureHits(piece) {
+  const cols = jlensGrid._cols;
+  if (!cols || !piece || piece.trim() === "") return;
+  const start = Math.max(0, cols.length - 80);
+  for (let c = start; c < cols.length; c++) {
+    const {cells, texts, probs} = cols[c];
+    for (let i = 0; i < texts.length; i++) {
+      const cell = cells[i];
+      if (texts[i] !== piece || cell._green || cell._future) continue;
+      cell._future = true;
+      const a = 0.2 + Math.min(0.6, probs[i] * 0.8);
+      cell.style.background = `rgba(139,127,245,${a.toFixed(3)})`;
+      cell.style.color = probs[i] > 0.5 ? "#0d0a24" : "#cfc8ff";
+      cell._tip += `\n⇢ said ${cols.length - c} token(s) later`;
+    }
+  }
+}
+const addJlensCol = (lens, emitted) => {
+  paintFutureHits(emitted);            // earlier columns first — then this one
+  addLensColTo(jlensGrid, lens, emitted, "pushes toward", true);
+};
 
 async function refreshLensGrid(grid, key, addFn) {
   if (grid.querySelectorAll(".lenscol:not(.axis)").length) return;   // live stream filled it
@@ -1194,7 +1233,7 @@ function paintJlens() {
   jlensBtn.classList.toggle("pol-on", jlensOn);
   jlensBtn.title = jlensOn
     ? "J-space readout on every token (adds one transport matmul per layer) — click to switch off"
-    : "click to read what's on the model's mind, token by token";
+    : "click to read what each layer pushes toward future tokens";
 }
 jlensBtn.onclick = async () => {
   const r = await fetch("/jlens", {method: "POST", headers: {"Content-Type": "application/json"},
@@ -1312,7 +1351,7 @@ function renderScrub() {
     (s >= 0 && s < t.tokens.length ? ` · step ${s + 1}` : " · (prefill)");
   trLensesEl.innerHTML = "";
   for (const [key, label, verb] of [["lens", "logit lens — would say now", "would say"],
-                                    ["jlens", "J-lens — has in mind", "has in mind"]]) {
+                                    ["jlens", "J-lens — pushed toward later", "pushes toward"]]) {
     if (!t[key] || s < 0 || s >= t[key].length || !t[key][s]) continue;
     const holder = document.createElement("div");
     const lab = document.createElement("div"); lab.className = "lenslabel"; lab.textContent = label;

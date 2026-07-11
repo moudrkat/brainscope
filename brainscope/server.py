@@ -292,8 +292,8 @@ def _jlens_readout(hs: torch.Tensor, top: int = 5):
     """What each layer is disposed to make the model say LATER: the hidden
     state transported into final-layer space by the fitted averaged Jacobian
     before the usual norm + lm_head readout (Anthropic 2026, see jlens.py).
-    Silent concepts — a word lighting up here is on the model's mind, not
-    necessarily in its mouth."""
+    A word lighting up here is represented and pushed toward future output,
+    not necessarily emitted."""
     return _topk_readout(state["jlens"].transport(hs.float()), top)
 
 
@@ -1011,8 +1011,8 @@ async def jlens_direction(body: dict):
     steering direction for a vocabulary token — the per-layer activation
     pattern that, to first order, makes the model more likely to say the
     token LATER — and registers it as a normal [n_layers, hidden] direction
-    for the existing steer stack / policies. Nudge what's on the model's
-    mind, then watch the J-lens panel to see whether it took."""
+    for the existing steer stack / policies. Nudge what the model is
+    disposed to say, then watch the J-lens panel to see whether it took."""
     jl, text = state["jlens"], (body.get("text") or "").strip()
     if jl is None:
         return JSONResponse({"error": "no J-lens loaded"}, status_code=400)
