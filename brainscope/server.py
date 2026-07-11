@@ -37,6 +37,9 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
+from .jlens import JacobianLens
+from .traces import TraceStore, emergence as compute_emergence
+
 STATIC = Path(__file__).parent / "static"
 
 # friendly shortcuts -> HF ids (extend freely)
@@ -53,7 +56,17 @@ state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {
                "loop": None, "device": "cpu", "model_name": "",
                "steer": None, "steer_handles": [], "policy": [], "policy_on": True,
                "gen": None, "probes": {"attn": {}, "mlp": {}}, "lens": False,
-               "viz": True}
+               "viz": True,
+               # J-lens (Jacobian lens) — see jlens.py; loaded via --jlens,
+               # per-token readout toggleable live (POST /jlens)
+               "jlens": None, "jlens_on": False,
+               # trace persistence — TraceStore via --traces; hidden-state
+               # capture is the heavy part and stays off until asked
+               "traces": None, "save_traces": True, "save_hidden": False}
+
+# hidden-state capture safety valve: at most this many steps kept per trace
+# (a 9B model's 4k-token trace would otherwise stack >1 GB of fp16)
+HIDDEN_MAX_STEPS = int(os.getenv("HIDDEN_MAX_STEPS", "2048"))
 
 # Prefill batch size: bounds eager attention's transient chunk×seq matrix.
 # Eager softmax upcasts to fp32, so the transient is chunk × seq × heads × 4 B
@@ -249,20 +262,39 @@ def _layer_signals(hidden_states, directions):
     return norms, cos
 
 
-def _logit_lens(hidden_states, top: int = 5):
-    """What the model would say if it stopped at each layer: every layer's
-    hidden state pushed through the final norm + lm_head. Watching the answer
-    crystallize with depth is the point of the exercise."""
+def _stack_last(hidden_states) -> torch.Tensor:
+    """Every layer's hidden state at the newest position: [n_layers, hidden]."""
+    return torch.stack([h[0, -1] for h in hidden_states[1:]])
+
+
+def _topk_readout(z: torch.Tensor, top: int = 5):
+    """Final norm + lm_head over a [n_layers, hidden] stack already sitting
+    in (or transported into) final-layer space — shared by both lenses."""
     norm, head = _final_norm_and_head()
     if norm is None or head is None:
         return None
-    hs = torch.stack([h[0, -1] for h in hidden_states[1:]])  # [n_layers, hidden]
     dtype = next(head.parameters()).dtype
-    probs = torch.softmax(head(norm(hs.to(dtype))).float(), dim=-1)
+    probs = torch.softmax(head(norm(z.to(dtype))).float(), dim=-1)
     p, idx = probs.topk(top, dim=-1)
     tok = state["tokenizer"]
     return [[{"t": tok.decode(int(idx[layer, k])), "p": round(float(p[layer, k]), 4)}
-             for k in range(top)] for layer in range(hs.shape[0])]
+             for k in range(top)] for layer in range(z.shape[0])]
+
+
+def _logit_lens(hs: torch.Tensor, top: int = 5):
+    """What the model would say if it stopped at each layer: every layer's
+    hidden state pushed through the final norm + lm_head. Watching the answer
+    crystallize with depth is the point of the exercise."""
+    return _topk_readout(hs, top)
+
+
+def _jlens_readout(hs: torch.Tensor, top: int = 5):
+    """What each layer is disposed to make the model say LATER: the hidden
+    state transported into final-layer space by the fitted averaged Jacobian
+    before the usual norm + lm_head readout (Anthropic 2026, see jlens.py).
+    Silent concepts — a word lighting up here is on the model's mind, not
+    necessarily in its mouth."""
+    return _topk_readout(state["jlens"].transport(hs.float()), top)
 
 
 def _capture_matrix(attentions, gen: dict) -> None:
@@ -456,8 +488,12 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     gen = {"id": uuid.uuid4().hex[:12], "n_prompt": n_prompt,
            "prompt_offset": n_prompt - len(prompt_ids),
            "prompt_tokens": [tok.decode(i) for i in prompt_ids],
-           "tokens": [], "norms": [], "lens": [], "attn_rows": [], "last_heads": [], "matrix": None,
+           "tokens": [], "all_tokens": [], "norms": [], "lens": [], "jlens": [],
+           "attn_rows": [], "last_heads": [], "matrix": None, "hidden": [],
            "steer": active_steer, "tags": tags or {}, "done": False}
+    # honored for the whole generation, so stored hidden states align with
+    # the captured steps even if the toggle flips mid-flight
+    save_hidden = bool(state["save_hidden"] and state["traces"])
     state["gen"] = gen
     state["stop"] = False   # cleared each generation; POST /stop sets it
     notify({"type": "start", "gen_id": gen["id"], "prompt_tokens": n_prompt,
@@ -515,6 +551,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         _tool_scan(scan, piece)
         state["steer_mute"] = not scan["speak"]
         payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
+        gen["all_tokens"].append(piece)
         if out.hidden_states is not None:
             norms, cos = _layer_signals(out.hidden_states, state["directions"])
             payload.update({"norms": norms, "cos": cos})
@@ -522,10 +559,17 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             n_layers = len(norms)
             payload["attn_norm"] = [round(probes["attn"].get(i, 0.0), 2) for i in range(n_layers)]
             payload["mlp_norm"] = [round(probes["mlp"].get(i, 0.0), 2) for i in range(n_layers)]
+            hs = _stack_last(out.hidden_states)
+            if save_hidden and len(gen["hidden"]) < HIDDEN_MAX_STEPS:
+                gen["hidden"].append(hs.to(torch.float16).cpu())
             if state["lens"]:
-                lens = _logit_lens(out.hidden_states)
+                lens = _logit_lens(hs)
                 payload["lens"] = lens
                 gen["lens"].append(lens)
+            if state["jlens"] is not None and state["jlens_on"]:
+                jlens = _jlens_readout(hs)
+                payload["jlens"] = jlens
+                gen["jlens"].append(jlens)
             if out.attentions:
                 entropy, top, head_entropy = _attn_signals(out.attentions, gen)
                 payload.update({"attn_entropy": entropy, "attn_top": top,
@@ -541,11 +585,19 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     text = forced_prefix + tok.decode(generated, skip_special_tokens=False)
     gen["done"] = True
     state["steer_mute"] = False
-    notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated)})
+    trace_id = None
+    if state["traces"] and state["save_traces"]:
+        try:
+            state["traces"].save(gen, state["model_name"], gen["hidden"] or None)
+            trace_id = gen["id"]
+        except Exception as e:   # persistence must never break generation
+            print(f"brainscope: trace save failed — {e}", flush=True)
+    notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated),
+            "trace_id": trace_id})
     return text
 
 
-def to_openai_response(text: str, model: str) -> dict:
+def to_openai_response(text: str, model: str, raw: bool = False) -> dict:
     tool_calls = []
     matched = None
     for pattern in TOOL_CALL_PATTERNS:
@@ -567,6 +619,8 @@ def to_openai_response(text: str, model: str) -> dict:
     content = re.sub(r"<think>.*?</think>", "", content, flags=re.S)
     content = content.replace("<|im_end|>", "").strip()
     message = {"role": "assistant", "content": content or None}
+    if raw:   # {"raw": true} in the request keeps the unstripped generation
+        message["raw_content"] = text   # incl. <think>…</think> — reasoning-trace clients
     if tool_calls:
         message["tool_calls"] = tool_calls
     return {"id": f"chatcmpl-{uuid.uuid4().hex[:12]}", "object": "chat.completion",
@@ -608,7 +662,7 @@ async def chat_completions(body: dict):
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
         notify, steering, tags, body.get("tool_choice"))
-    return JSONResponse(to_openai_response(text, state["model_name"]))
+    return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
 
 
 @app.get("/v1/models")
@@ -628,6 +682,10 @@ async def info():
             "vocab_size": getattr(cfg, "vocab_size", None),
             "lens": state["lens"],
             "viz": state["viz"],
+            "jlens": {"loaded": state["jlens"] is not None, "on": state["jlens_on"],
+                      "mode": (state["jlens"].meta.get("mode") if state["jlens"] else None)},
+            "traces": {"enabled": state["traces"] is not None,
+                       "save": state["save_traces"], "hidden": state["save_hidden"]},
             "params_b": round(sum(p.numel() for p in state["model"].parameters()) / 1e9, 1)}
 
 
@@ -639,8 +697,8 @@ async def gen_meta():
     if not g:
         return JSONResponse({"error": "no generation yet"}, status_code=404)
     keys = ("id", "n_prompt", "prompt_offset", "prompt_tokens", "tokens",
-            "norms", "lens", "steer", "tags", "done")
-    return {k: g[k] for k in keys}
+            "all_tokens", "norms", "lens", "jlens", "steer", "tags", "done")
+    return {k: g.get(k) for k in keys}
 
 
 @app.get("/gen/attention")
@@ -924,6 +982,122 @@ async def set_policy(body: dict):
     return {"policy": state["policy"], "enabled": state["policy_on"]}
 
 
+# ------------------------------------------------------------- J-lens ----
+
+@app.get("/jlens")
+async def jlens_info():
+    jl = state["jlens"]
+    if jl is None:
+        return {"loaded": False, "on": False}
+    return {"loaded": True, "on": state["jlens_on"], "meta": jl.meta,
+            "n_layers": jl.n_layers, "hidden": jl.hidden}
+
+
+@app.post("/jlens")
+async def jlens_toggle(body: dict):
+    """{"on": bool} — flip the per-token J-lens readout. This is the heavy
+    switch: one [n_layers, d, d] transport per generated token when on."""
+    if state["jlens"] is None:
+        return JSONResponse({"error": "no J-lens loaded — start with --jlens LENS.pt "
+                             "(fit one: python -m brainscope.jlens fit …)"},
+                            status_code=400)
+    state["jlens_on"] = bool(body.get("on", True))
+    return {"on": state["jlens_on"]}
+
+
+@app.post("/jlens/direction")
+async def jlens_direction(body: dict):
+    """Steering × J-lens: {"text": "cake", "name"?} materializes the J-space
+    steering direction for a vocabulary token — the per-layer activation
+    pattern that, to first order, makes the model more likely to say the
+    token LATER — and registers it as a normal [n_layers, hidden] direction
+    for the existing steer stack / policies. Nudge what's on the model's
+    mind, then watch the J-lens panel to see whether it took."""
+    jl, text = state["jlens"], (body.get("text") or "").strip()
+    if jl is None:
+        return JSONResponse({"error": "no J-lens loaded"}, status_code=400)
+    if not text:
+        return JSONResponse({"error": "expected {text: word}"}, status_code=400)
+    tok = state["tokenizer"]
+    ids = tok(" " + text, add_special_tokens=False).input_ids or \
+        tok(text, add_special_tokens=False).input_ids
+    if not ids:
+        return JSONResponse({"error": f"cannot tokenize {text!r}"}, status_code=400)
+    piece = tok.decode(ids[0])
+    head = state["model"].get_output_embeddings()
+    dirs = jl.direction(ids[0], head.weight.detach().float().cpu())
+    name = body.get("name") or f"j:{text}"
+    state["directions"][name] = dirs.to(state["device"])
+    n = jl.n_layers
+    state["dir_meta"][name] = {"layer_from": round(n / 3), "layer_to": round(2 * n / 3),
+                               "strength": 6.0}
+    _persist_directions()
+    return {"name": name, "token": piece, "multi_token": len(ids) > 1,
+            "directions": sorted(state["directions"])}
+
+
+# ------------------------------------------------------------- traces ----
+
+@app.get("/traces")
+async def traces_list():
+    if state["traces"] is None:
+        return JSONResponse({"error": "trace persistence is off — start with --traces DIR"},
+                            status_code=404)
+    return {"traces": state["traces"].list(),
+            "save": state["save_traces"], "hidden": state["save_hidden"]}
+
+
+@app.post("/traces/config")
+async def traces_config(body: dict):
+    """{"save": bool?, "hidden": bool?} — `hidden` is the heavy one: keeps
+    every captured step's full [n_layers, hidden] residual next to the trace
+    (fp16), which is what exact post-hoc analytics (emergence) need."""
+    if state["traces"] is None:
+        return JSONResponse({"error": "trace persistence is off — start with --traces DIR"},
+                            status_code=404)
+    if "save" in body:
+        state["save_traces"] = bool(body["save"])
+    if "hidden" in body:
+        state["save_hidden"] = bool(body["hidden"])
+    return {"save": state["save_traces"], "hidden": state["save_hidden"]}
+
+
+@app.get("/traces/{trace_id}")
+async def trace_get(trace_id: str):
+    t = state["traces"].load(trace_id) if state["traces"] else None
+    if t is None:
+        return JSONResponse({"error": "unknown trace"}, status_code=404)
+    return t
+
+
+@app.delete("/traces/{trace_id}")
+async def trace_delete(trace_id: str):
+    if not (state["traces"] and state["traces"].delete(trace_id)):
+        return JSONResponse({"error": "unknown trace"}, status_code=404)
+    return {"deleted": trace_id}
+
+
+@app.get("/traces/{trace_id}/emergence")
+async def trace_emergence(trace_id: str, token: str | None = None):
+    """When did the answer surface? p(answer token) per reasoning step, best
+    layer, under each lens — exact where hidden states were stored, top-k
+    lower bound otherwise. `token` overrides which piece to track."""
+    store = state["traces"]
+    t = store.load(trace_id) if store else None
+    if t is None:
+        return JSONResponse({"error": "unknown trace"}, status_code=404)
+    norm, head = _final_norm_and_head()
+
+    def run():
+        return compute_emergence(t, store.hidden(trace_id), tokenizer=state["tokenizer"],
+                                 norm=norm, head=head, jlens=state["jlens"],
+                                 override=token)
+
+    out = await asyncio.to_thread(run)
+    status = 400 if "error" in out else 200
+    return JSONResponse(out, status_code=status)
+
+
 @app.post("/stop")
 async def stop():
     # cooperative cancel: the decode loop checks state["stop"] each token, so
@@ -972,6 +1146,15 @@ def main() -> None:
     parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
                         help="logit lens (per-layer next-token readout); auto = on for CUDA, "
                              "off for CPU (one lm_head matmul per layer per token)")
+    parser.add_argument("--jlens", type=Path, default=None,
+                        help="fitted Jacobian-lens artifact (python -m brainscope.jlens fit …) "
+                             "— per-token J-space readout, toggleable live via POST /jlens")
+    parser.add_argument("--traces", type=Path, default=None,
+                        help="directory for trace persistence — every generation saved for "
+                             "replay & reasoning-trace analytics (hidden-state capture stays "
+                             "off until enabled via POST /traces/config)")
+    parser.add_argument("--keep-traces", type=int, default=200,
+                        help="max stored traces before the oldest are dropped")
     parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
     parser.add_argument("--no-browser", action="store_true")
@@ -1011,6 +1194,23 @@ def main() -> None:
             else:                        # legacy format: bare list of rules
                 state["policy"] = raw
     state["lens"] = args.lens == "on" or (args.lens == "auto" and state["device"] == "cuda")
+    if args.jlens:
+        jl = JacobianLens.load(args.jlens, device=state["device"])
+        n_layers, hidden = len(_decoder_layers(state["model"])), _hidden_size()
+        if (jl.n_layers, jl.hidden) != (n_layers, hidden):
+            raise SystemExit(f"brainscope: J-lens {args.jlens} was fitted for "
+                             f"{jl.meta.get('model')} ({jl.n_layers} layers × {jl.hidden}), "
+                             f"but the loaded model has {n_layers} × {hidden}")
+        if jl.meta.get("model") not in ("?", None, state["model_name"]):
+            print(f"brainscope: WARNING — J-lens fitted on {jl.meta['model']}, "
+                  f"serving {state['model_name']}", flush=True)
+        state["jlens"], state["jlens_on"] = jl, True
+        print(f"brainscope: J-lens loaded ({jl.meta.get('mode', 'future')} mode, "
+              f"identity_error {jl.meta.get('identity_error')})", flush=True)
+    if args.traces:
+        state["traces"] = TraceStore(args.traces, keep=args.keep_traces)
+        print(f"brainscope: traces → {args.traces} "
+              f"({len(state['traces'].index)} existing)", flush=True)
     if not args.no_browser:
         import threading
         import webbrowser
