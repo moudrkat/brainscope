@@ -90,6 +90,19 @@ different question. The **◎ j-lens** header switch (or `POST /jlens
 spirit as ◉ capture. The server refuses a lens whose shape doesn't match
 the loaded model and warns when the fit came from a different model id.
 
+The clearest way to see what the transport buys you is the same moment
+under both lenses (this is the traces replay view):
+
+![Same moment, two questions: the logit lens collapses into fragments below L20, the J-lens reads national, city, officially, France, Paris](img/lens-vs-jlens-same-moment.png)
+
+*Qwen3-4B writing " of" in "The capital of France is Paris." Top layers are
+identical by construction (the final layer's Jacobian is the identity). The
+difference is the middle of the network: the raw logit lens reads fragments
+("oge", "Seat", "ín") because mid-stack activations don't live in the
+output basis — the J-lens transports them there first and reads a coherent
+stream of what is being prepared: national, city, officially, France,
+Paris.*
+
 Reading the panel: a word in a J-lens cell is *pushed toward future output*
 at that layer — disposed to be said later, not necessarily next, not
 necessarily ever. When a cell's displayed word really arrives later in the
