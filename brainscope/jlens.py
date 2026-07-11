@@ -126,16 +126,19 @@ class JacobianLens:
         coeff desc, "explained": fraction of squared norm captured}."""
         assert method in ("gp", "mp"), method
         J = self.J[layer]                                    # [d, d]
-        W = unembed_weight.to(J.device, J.dtype)             # [vocab, d]
-        JW = W @ J                                           # rows = w_vᵀ J_l  [vocab, d]
-        norms = JW.norm(dim=1).clamp_min(1e-6)
-        H = hs.to(J.device, J.dtype)                         # [steps, d]
+        # big tensors stay in the unembedding's native dtype (bf16 on GPU) —
+        # the fp32 copies would add ~3 GB next to a 4B model and OOM a 16 GB
+        # card; per-step math below is small and runs in fp32
+        W = unembed_weight.to(J.device)                      # [vocab, d]
+        JW = W @ J.to(W.dtype)                               # rows = w_vᵀ J_l  [vocab, d]
+        norms = JW.norm(dim=1).float().clamp_min(1e-6)
+        H = hs.to(J.device, torch.float32)                   # [steps, d]
         n_steps = H.shape[0]
         R = H.clone()
         active = torch.full((n_steps, k), -1, dtype=torch.long)
-        coeffs = torch.zeros(n_steps, k, dtype=J.dtype)
+        coeffs = torch.zeros(n_steps, k, dtype=torch.float32)
         for it in range(k):
-            corr = (R @ JW.T) / norms                        # [steps, vocab]
+            corr = (R.to(JW.dtype) @ JW.T).float() / norms   # [steps, vocab]
             for s in range(n_steps):                         # no atom twice
                 prev = active[s, :it]
                 corr[s, prev[prev >= 0]] = -torch.inf
@@ -143,7 +146,7 @@ class JacobianLens:
             active[:, it] = best
             for s in range(n_steps):
                 A = active[s, : it + 1]
-                D = JW[A] / norms[A, None]                   # [it+1, d] unit atoms
+                D = JW[A].float() / norms[A, None]           # [it+1, d] unit atoms
                 if method == "mp":
                     c = float(R[s] @ D[-1])
                     if c > 0:
