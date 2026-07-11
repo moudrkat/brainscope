@@ -103,8 +103,8 @@
   .mathead.sel { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
   #matcanvas { height:440px; cursor:crosshair; }
 
-  /* ---- logit lens ---- */
-  #lensgrid { display:flex; gap:2px; overflow-x:auto; background:var(--panel2);
+  /* ---- lens grids (logit lens + J-lens share the layout) ---- */
+  .lensgrid { display:flex; gap:2px; overflow-x:auto; background:var(--panel2);
               border-radius:3px; padding:6px; }
   .lenscol { display:flex; flex-direction:column; gap:1px; flex:0 0 auto;
              animation:colin .3s ease; }
@@ -124,6 +124,36 @@
                             text-align:right; padding-right:6px; }
   #lensgrid:empty::before { content:"…columns appear as tokens stream (needs --lens on)";
                             color:var(--faint); font-size:11px; }
+  #jlensgrid:empty::before { content:"…columns appear as tokens stream (needs --jlens LENS.pt and the ◎ j-lens switch on)";
+                             color:var(--faint); font-size:11px; }
+
+  /* ---- traces ---- */
+  #trlist { max-height:220px; overflow-y:auto; }
+  .trrow { display:flex; gap:10px; align-items:baseline; padding:5px 8px; cursor:pointer;
+           border-radius:3px; font-size:11.5px; color:var(--muted); }
+  .trrow:hover { background:var(--panel2); }
+  .trrow.sel { outline:1px solid var(--accent); }
+  .trrow .trts { color:var(--faint); flex:0 0 auto; }
+  .trrow .trprev { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
+                   white-space:nowrap; color:var(--ink); }
+  .trrow .trbadge { color:var(--faint); font-size:10px; flex:0 0 auto; }
+  .trrow .trdel { color:var(--faint); cursor:pointer; flex:0 0 auto; }
+  .trrow .trdel:hover { color:#e5636b; }
+  #trdetail { margin-top:10px; border-top:1px solid var(--line); padding-top:10px; }
+  #trtext { padding:10px 12px; background:var(--panel2); border-radius:3px; max-height:150px;
+            overflow-y:auto; white-space:pre-wrap; font-size:12px; line-height:1.5;
+            color:#c7d2e0; }
+  #trtext .think { color:var(--faint); font-style:italic; }
+  #trtext .tok.past { background:rgba(232,180,90,.10); }
+  #trtext .tok.cur { outline:1px solid var(--accent); border-radius:2px; }
+  #trtext .tok:hover { outline:1px solid rgba(61,189,125,.6); cursor:pointer; }
+  #trscrubrow { display:flex; gap:10px; align-items:center; margin:8px 0; }
+  #trscrub { flex:1; accent-color:var(--accent); }
+  #trstep { color:var(--accent); font-size:11px; min-width:110px; }
+  #trlenses { display:flex; gap:14px; margin-top:6px; }
+  #trlenses .lensgrid { flex:0 0 auto; }
+  #trlenses .lenslabel { font-size:10px; color:var(--faint); text-align:center; margin-bottom:3px; }
+  #emerge { height:170px; margin-top:10px; }
 
   #text .tok { border-radius:2px; }
   #text .tok:hover { outline:1px solid rgba(232,180,90,.5); cursor:pointer; }
@@ -192,6 +222,12 @@
       <button id="stackadd" class="btn" title="add this vector to the stack — several vectors compose, like the bake recipes">＋</button>
       <span id="stack"></span>
     </span>
+    <span id="jwordbox" style="display:none">
+      <input id="jword" placeholder="word…" spellcheck="false" style="width:86px;background:var(--panel);color:var(--ink);border:1px solid var(--line);font:12px var(--mono);padding:5px 8px;border-radius:4px"
+             title="steering × J-lens: turn any word into a steering vector — the J-space pattern that makes the model more likely to say it later">
+      <button id="jwordadd" class="btn" title="materialize the J-space direction for this word and select it in the steering controls">→ vec</button>
+    </span>
+    <button id="jlensbtn" class="btn" style="display:none">◎ j-lens</button>
     <button id="vizbtn" class="btn">◉ capture</button>
     <button id="polbtn" class="btn" style="display:none"></button>
     <button id="rec" class="btn">● record</button>
@@ -222,6 +258,8 @@
         <button class="tab" data-p="heads" id="tab-heads">heads</button>
         <button class="tab" data-p="matrix" id="tab-matrix">matrix</button>
         <button class="tab" data-p="lens">logit lens</button>
+        <button class="tab" data-p="jlens" id="tab-jlens" style="display:none">J-lens</button>
+        <button class="tab" data-p="traces" id="tab-traces" style="display:none">traces</button>
         <span id="tabnote"></span>
       </div>
       <div class="panel on" id="p-act">
@@ -264,7 +302,41 @@
           <span style="color:var(--live)">green</span> = layer already agrees with the token that finally came out ·
           L<i>n</i> under the header = the depth where the answer crystallized · hover a cell for top-3 ·
           debugging: green wave never arrives = the model is guessing · wave collapses mid-answer = steering too strong</div>
-        <div id="lensgrid"></div>
+        <div id="lensgrid" class="lensgrid"></div>
+      </div>
+      <div class="panel" id="p-jlens">
+        <div class="pinfo">what each layer is disposed to make the model say <b>later</b> — activations
+          transported into final-layer space by an averaged Jacobian, then read out
+          (<span style="color:var(--accent)">Jacobian lens</span>, Anthropic 2026) ·
+          a word appearing here mid-reasoning is <i>on the model's mind</i>, not necessarily in its output ·
+          compare with the logit lens: that one asks "what would you say <i>now</i>" ·
+          hover a cell for top-5, click to pin</div>
+        <div id="jlensgrid" class="lensgrid"></div>
+      </div>
+      <div class="panel" id="p-traces">
+        <div class="pctl" style="display:flex;align-items:center;margin-bottom:6px">
+          <span class="pinfo" id="trinfo" style="margin:0">stored generations — click one to replay it</span>
+          <span style="margin-left:auto">
+            <button class="rbtn" id="trhidden" title="keep full per-token hidden states with each trace (heavy — enables exact emergence curves)">hidden: …</button>
+            <button class="rbtn" id="trsave" title="persist every generation as a trace">save: …</button>
+            <button class="rbtn" id="trrefresh">↻ refresh</button>
+          </span>
+        </div>
+        <div id="trlist"></div>
+        <div id="trdetail" style="display:none">
+          <div id="trtext"></div>
+          <div id="trscrubrow">
+            <input id="trscrub" type="range" min="0" max="0" value="0">
+            <span id="trstep"></span>
+          </div>
+          <div id="trlenses"></div>
+          <canvas id="emerge" class="pcanvas"></canvas>
+          <div class="pcap" id="emergecap">answer emergence: p(first answer token), best layer per step ·
+            <span style="color:var(--accent)">amber = logit lens</span> (would say it now) ·
+            <span style="color:var(--live)">green = J-lens</span> (holding it silently) ·
+            dashed = top-k lower bound (no hidden states stored) · │ = &lt;/think&gt; ends ·
+            click any word above to track that word instead</div>
+        </div>
       </div>
     </div>
   </div>
@@ -407,6 +479,8 @@ function refreshActivePanel() {
   else if (activeTab === "heads") refreshHeads();
   else if (activeTab === "matrix") refreshMatrix();
   else if (activeTab === "lens") refreshLens();
+  else if (activeTab === "jlens") refreshJlens();
+  else if (activeTab === "traces") refreshTraces();
 }
 setInterval(() => {
   if (document.hidden || !generating || activeTab === "act") return;
@@ -564,14 +638,15 @@ async function refreshHeads() {
   }
 }
 
-// ---------- logit lens ----------
+// ---------- lens grids (logit lens + J-lens share the machinery) ----------
 const lensGrid = document.getElementById("lensgrid");
+const jlensGrid = document.getElementById("jlensgrid");
 function dispTok(t) {
   const s = (t || "").replace(/\n/g, "⏎");
   return s.trim() === "" ? "·" : s;
 }
-function ensureLensAxis(n) {
-  if (lensGrid.querySelector(".axis")) return;
+function ensureLensAxisIn(grid, n) {
+  if (grid.querySelector(".axis")) return;
   const col = document.createElement("div"); col.className = "lenscol axis";
   const head = document.createElement("div"); head.className = "lenshead"; head.textContent = "layer";
   col.appendChild(head);
@@ -580,7 +655,7 @@ function ensureLensAxis(n) {
     cell.textContent = (l === 1 || l === n || l % 4 === 0) ? l : "";
     col.appendChild(cell);
   }
-  lensGrid.appendChild(col);
+  grid.appendChild(col);
 }
 let lensHist = [];       // per answer token: its lens rows (for hover on the answer text)
 function emergeDepth(lens, emitted) {
@@ -604,10 +679,9 @@ function lensTipText(entries, header) {
     `${probBar(e.p).padEnd(8)} ${(e.p * 100).toFixed(0).padStart(3)}%  ${JSON.stringify(e.t)}`).join("\n");
 }
 
-let lensStale = false;   // cleared lazily: a failed/retried gen must not blank the view
-function addLensCol(lens, emitted) {
-  if (lensStale) { lensGrid.innerHTML = ""; lensStale = false; }
-  ensureLensAxis(lens.length);
+function addLensColTo(grid, lens, emitted, tipVerb) {
+  if (grid._stale) { grid.innerHTML = ""; grid._stale = false; }
+  ensureLensAxisIn(grid, lens.length);
   // crystallization depth: lowest layer from which the top-1 stays the emitted token
   let emerge = null;
   for (let l = lens.length - 1; l >= 0; l--) {
@@ -632,22 +706,26 @@ function addLensCol(lens, emitted) {
     } else {
       cell.style.background = `rgba(232,180,90,${(top.p * 0.45).toFixed(3)})`;
     }
-    cell._tip = lensTipText(lens[l], `layer ${l + 1} would say:`);
+    cell._tip = lensTipText(lens[l], `layer ${l + 1} ${tipVerb || "would say"}:`);
     col.appendChild(cell);
   }
   // full answer stays scrollable; only follow the stream if the user is
   // already at the right edge (don't fight a hand that scrolled back)
-  const nearEnd = lensGrid.scrollLeft + lensGrid.clientWidth >= lensGrid.scrollWidth - 80;
-  lensGrid.appendChild(col);
-  if (nearEnd) lensGrid.scrollLeft = lensGrid.scrollWidth;
+  const nearEnd = grid.scrollLeft + grid.clientWidth >= grid.scrollWidth - 80;
+  grid.appendChild(col);
+  if (nearEnd) grid.scrollLeft = grid.scrollWidth;
 }
+const addLensCol = (lens, emitted) => addLensColTo(lensGrid, lens, emitted);
+const addJlensCol = (lens, emitted) => addLensColTo(jlensGrid, lens, emitted, "has in mind");
 
-async function refreshLens() {
-  if (lensGrid.querySelectorAll(".lenscol:not(.axis)").length) return;   // live stream filled it
+async function refreshLensGrid(grid, key, addFn) {
+  if (grid.querySelectorAll(".lenscol:not(.axis)").length) return;   // live stream filled it
   const g = await fetch("/gen").then(r => r.ok ? r.json() : null).catch(() => null);
-  if (!g || !g.lens || !g.lens.length) return;
-  for (let i = 0; i < g.lens.length; i++) addLensCol(g.lens[i], g.tokens[i]);
+  if (!g || !g[key] || !g[key].length) return;
+  for (let i = 0; i < g[key].length; i++) addFn(g[key][i], g.tokens[i]);
 }
+const refreshLens = () => refreshLensGrid(lensGrid, "lens", addLensCol);
+const refreshJlens = () => refreshLensGrid(jlensGrid, "jlens", addJlensCol);
 
 // ---------- backfill for late joiners: repaint the last generation ----------
 async function backfill() {
@@ -666,6 +744,9 @@ async function backfill() {
     textEl.appendChild(sp);
   });
   draw();
+  if (g.jlens && g.jlens.length) {
+    for (let i = 0; i < g.jlens.length; i++) addJlensCol(g.jlens[i], g.tokens[i]);
+  }
   if (g.lens.length) {
     lensOn = true;
     updateArch(g.norms[g.norms.length - 1], null, null, g.lens[g.lens.length - 1],
@@ -694,7 +775,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
       cols = []; tokens = []; allTokens = []; lensHist = []; textEl.textContent = "";
-      lastAttn = null; lensStale = true;
+      lastAttn = null; lensGrid._stale = true; jlensGrid._stale = true;
       generating = true;
       dot.classList.add("live");
       const tag = msg.tags && msg.tags.agent ? ` · ${msg.tags.agent}${msg.tags.phase ? "/" + msg.tags.phase : ""}` : "";
@@ -710,6 +791,7 @@ function connect() {
       textEl.appendChild(sp);
       textEl.scrollTop = textEl.scrollHeight;
       if (msg.lens) { lensOn = true; addLensCol(msg.lens, msg.text); }
+      if (msg.jlens) addJlensCol(msg.jlens, msg.text);
       if (msg.head_entropy) lastHeadEntropy = msg.head_entropy;
       if (msg.attn_entropy) lastEntropy = msg.attn_entropy;
       if (!msg.norms.length) return;
@@ -723,6 +805,7 @@ function connect() {
       generating = false;
       dot.classList.remove("live");
       stxt.textContent = `done · ${msg.completion_tokens} tok`;
+      if (msg.trace_id && activeTab === "traces") refreshTraces();
       refreshActivePanel();   // final, complete picture
     }
   };
@@ -737,6 +820,16 @@ fetch("/info").then(r => r.json()).then(i => {
   nLayersTotal = i.n_layers || 36;
   lensOn = !!i.lens;
   vizOn = i.viz !== false; paintViz();
+  if (i.jlens && i.jlens.loaded) {
+    document.getElementById("tab-jlens").style.display = "";
+    document.getElementById("jlensbtn").style.display = "";
+    document.getElementById("jwordbox").style.display = "inline-flex";
+    jlensOn = !!i.jlens.on; paintJlens();
+  }
+  if (i.traces && i.traces.enabled) {
+    document.getElementById("tab-traces").style.display = "";
+    trSave = i.traces.save !== false; trHidden = !!i.traces.hidden; paintTraceCfg();
+  }
   buildArch(nLayersTotal);
   if (!lrangeEl.value) lrangeEl.value =
     `${Math.round(nLayersTotal / 3)}-${Math.round(2 * nLayersTotal / 3)}`;
@@ -907,20 +1000,24 @@ textEl.addEventListener("click", async (ev) => {
 // rich hover for lens cells (probability bars instead of slow native titles)
 // click a cell to PIN the tooltip — it stays for screenshots; click anywhere to release
 let tipPinned = false;
-lensGrid.addEventListener("mousemove", (ev) => {
-  if (tipPinned) return;
-  const c = ev.target;
-  if (!c._tip) { tip.style.display = "none"; return; }
-  showTip(ev, c._tip);
-});
-lensGrid.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
-lensGrid.addEventListener("click", (ev) => {
-  const c = ev.target;
-  if (!c._tip) return;
-  ev.stopPropagation();
-  tipPinned = true;
-  showTip(ev, c._tip + "\n📌 pinned — click anywhere to release");
-});
+function bindLensTips(grid) {
+  grid.addEventListener("mousemove", (ev) => {
+    if (tipPinned) return;
+    const c = ev.target;
+    if (!c._tip) { tip.style.display = "none"; return; }
+    showTip(ev, c._tip);
+  });
+  grid.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
+  grid.addEventListener("click", (ev) => {
+    const c = ev.target;
+    if (!c._tip) return;
+    ev.stopPropagation();
+    tipPinned = true;
+    showTip(ev, c._tip + "\n📌 pinned — click anywhere to release");
+  });
+}
+bindLensTips(lensGrid);
+bindLensTips(jlensGrid);
 document.addEventListener("click", () => {
   if (tipPinned) { tipPinned = false; tip.style.display = "none"; }
 });
@@ -1088,6 +1185,207 @@ polBtn.onclick = async () => {
   if (r) paintPolicy(r);
 };
 initPolicy();
+
+// ---------- J-lens: the heavy-readout switch + steering × J-lens ----------
+const jlensBtn = document.getElementById("jlensbtn");
+let jlensOn = false;
+function paintJlens() {
+  jlensBtn.textContent = jlensOn ? "◎ j-lens on" : "○ j-lens off";
+  jlensBtn.classList.toggle("pol-on", jlensOn);
+  jlensBtn.title = jlensOn
+    ? "J-space readout on every token (adds one transport matmul per layer) — click to switch off"
+    : "click to read what's on the model's mind, token by token";
+}
+jlensBtn.onclick = async () => {
+  const r = await fetch("/jlens", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({on: !jlensOn})}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r) { jlensOn = !!r.on; paintJlens(); }
+};
+
+const jwordEl = document.getElementById("jword");
+document.getElementById("jwordadd").onclick = async () => {
+  const text = jwordEl.value.trim();
+  if (!text) return;
+  const r = await fetch("/jlens/direction", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) return;
+  jwordEl.value = "";
+  await initSteer();                    // refresh the dropdown with the new vector
+  dirSel.value = r.name;
+  applyPreset();
+  if (steerOn) pushSteer();
+};
+jwordEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("jwordadd").click();
+});
+
+// ---------- traces: stored generations, replay, answer emergence ----------
+const trListEl = document.getElementById("trlist");
+const trDetailEl = document.getElementById("trdetail");
+const trTextEl = document.getElementById("trtext");
+const trScrub = document.getElementById("trscrub");
+const trStepEl = document.getElementById("trstep");
+const trLensesEl = document.getElementById("trlenses");
+const emergeCanvas = document.getElementById("emerge");
+let trSave = true, trHidden = false, trCurrent = null, trEmergence = null;
+
+function paintTraceCfg() {
+  const h = document.getElementById("trhidden"), s = document.getElementById("trsave");
+  h.textContent = `hidden: ${trHidden ? "on" : "off"}`;
+  h.classList.toggle("on", trHidden);
+  s.textContent = `save: ${trSave ? "on" : "off"}`;
+  s.classList.toggle("on", trSave);
+}
+async function pushTraceCfg(body) {
+  const r = await fetch("/traces/config", {method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)}).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (r) { trSave = !!r.save; trHidden = !!r.hidden; paintTraceCfg(); }
+}
+document.getElementById("trhidden").onclick = () => pushTraceCfg({hidden: !trHidden});
+document.getElementById("trsave").onclick = () => pushTraceCfg({save: !trSave});
+document.getElementById("trrefresh").onclick = () => refreshTraces(true);
+
+async function refreshTraces(force) {
+  const r = await fetch("/traces").then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) return;
+  trSave = !!r.save; trHidden = !!r.hidden; paintTraceCfg();
+  document.getElementById("trinfo").textContent =
+    `${r.traces.length} stored generation${r.traces.length === 1 ? "" : "s"} — click one to replay it`;
+  trListEl.innerHTML = "";
+  for (const t of r.traces) {
+    const row = document.createElement("div");
+    row.className = "trrow" + (trCurrent && trCurrent.id === t.id ? " sel" : "");
+    row.dataset.id = t.id;
+    const badges = [t.think ? "think" : null, t.has_jlens ? "j-lens" : null,
+                    t.has_hidden ? "hidden" : null,
+                    t.tags && t.tags.agent ? t.tags.agent : null].filter(Boolean).join(" · ");
+    row.innerHTML = `<span class="trts">${t.ts || ""}</span>` +
+      `<span class="trprev">${escHtml(t.preview || "(empty)")}</span>` +
+      `<span class="trbadge">${t.n_tokens} tok${badges ? " · " + badges : ""}</span>` +
+      `<span class="trdel" title="delete this trace">✕</span>`;
+    row.onclick = (ev) => {
+      if (ev.target.classList.contains("trdel")) {
+        fetch(`/traces/${t.id}`, {method: "DELETE"}).then(() => refreshTraces(true));
+        return;
+      }
+      openTrace(t.id);
+    };
+    trListEl.appendChild(row);
+  }
+}
+
+async function openTrace(id) {
+  const t = await fetch(`/traces/${id}`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!t) return;
+  trCurrent = t; trEmergence = null;
+  trListEl.querySelectorAll(".trrow").forEach(r => r.classList.toggle("sel", r.dataset.id === id));
+  trDetailEl.style.display = "";
+  trTextEl.innerHTML = "";
+  const [ts, te] = t.think || [-1, -1];
+  t.all_tokens.forEach((piece, i) => {
+    const sp = document.createElement("span");
+    sp.className = "tok" + (i >= ts && i <= te && ts >= 0 ? " think" : "");
+    sp.textContent = piece; sp.dataset.i = i;
+    sp.title = "click to track this word in the emergence chart";
+    trTextEl.appendChild(sp);
+  });
+  trScrub.max = Math.max(0, t.all_tokens.length - 1);
+  trScrub.value = trScrub.max;
+  renderScrub();
+  fetchEmergence();
+}
+
+function renderScrub() {
+  const t = trCurrent;
+  if (!t) return;
+  const k = +trScrub.value;
+  trTextEl.querySelectorAll(".tok").forEach((sp, i) => {
+    sp.classList.toggle("past", i < k);
+    sp.classList.toggle("cur", i === k);
+    if (i === k) sp.scrollIntoView({block: "nearest"});
+  });
+  const s = k - (t.capture_offset || 0);   // captured-step index for this token
+  const piece = t.all_tokens[k];
+  trStepEl.textContent = `token ${k + 1}/${t.all_tokens.length} ${JSON.stringify(piece ?? "")}` +
+    (s >= 0 && s < t.tokens.length ? ` · step ${s + 1}` : " · (prefill)");
+  trLensesEl.innerHTML = "";
+  for (const [key, label, verb] of [["lens", "logit lens — would say now", "would say"],
+                                    ["jlens", "J-lens — has in mind", "has in mind"]]) {
+    if (!t[key] || s < 0 || s >= t[key].length || !t[key][s]) continue;
+    const holder = document.createElement("div");
+    const lab = document.createElement("div"); lab.className = "lenslabel"; lab.textContent = label;
+    const grid = document.createElement("div"); grid.className = "lensgrid";
+    holder.append(lab, grid);
+    trLensesEl.appendChild(holder);
+    addLensColTo(grid, t[key][s], t.tokens[s], verb);
+    bindLensTips(grid);
+  }
+}
+trScrub.addEventListener("input", renderScrub);
+
+trTextEl.addEventListener("click", (ev) => {
+  const sp = ev.target;
+  if (!sp.dataset || sp.dataset.i == null || !trCurrent) return;
+  const piece = trCurrent.all_tokens[+sp.dataset.i];
+  if (piece && piece.trim()) fetchEmergence(piece.trim());
+});
+
+async function fetchEmergence(token) {
+  if (!trCurrent) return;
+  const q = token ? `?token=${encodeURIComponent(token)}` : "";
+  const r = await fetch(`/traces/${trCurrent.id}/emergence${q}`)
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  trEmergence = r;
+  drawEmergence();
+}
+
+function drawEmergence() {
+  const W = emergeCanvas.width = emergeCanvas.clientWidth * devicePixelRatio;
+  const H = emergeCanvas.height = emergeCanvas.clientHeight * devicePixelRatio;
+  const ctx2 = emergeCanvas.getContext("2d");
+  ctx2.clearRect(0, 0, W, H);
+  const em = trEmergence;
+  const font = `${10 * devicePixelRatio}px ${getComputedStyle(document.body).fontFamily}`;
+  ctx2.font = font;
+  if (!em || !em.series || !Object.keys(em.series).length) {
+    ctx2.fillStyle = "#5c6b80";
+    ctx2.fillText("no emergence data — needs --lens/--jlens readouts (exact curve needs hidden: on)",
+                  10, H / 2);
+    return;
+  }
+  const n = em.n_steps || Math.max(...Object.values(em.series).map(s => s.length));
+  const padL = 34 * devicePixelRatio, padB = 16 * devicePixelRatio, padT = 14 * devicePixelRatio;
+  const px = (i) => padL + i / Math.max(1, n - 1) * (W - padL - 6);
+  const py = (p) => padT + (1 - p) * (H - padT - padB);
+  ctx2.strokeStyle = "rgba(29,43,66,.9)";
+  for (const g of [0, 0.5, 1]) {
+    ctx2.beginPath(); ctx2.moveTo(padL, py(g)); ctx2.lineTo(W, py(g)); ctx2.stroke();
+    ctx2.fillStyle = "#5c6b80"; ctx2.fillText(g.toFixed(1), 6, py(g) + 3 * devicePixelRatio);
+  }
+  if (em.think) {   // where </think> ends, in captured-step coordinates
+    const cut = em.think[1] - (em.capture_offset ?? 1);
+    if (cut >= 0 && cut < n) {
+      ctx2.strokeStyle = "rgba(233,238,245,.55)"; ctx2.setLineDash([4, 4]);
+      ctx2.beginPath(); ctx2.moveTo(px(cut), padT); ctx2.lineTo(px(cut), H - padB); ctx2.stroke();
+      ctx2.setLineDash([]);
+    }
+  }
+  const styles = {logit_lens: ["#e8b45a", []], jlens: ["#3dbd7d", []],
+                  logit_lens_topk: ["#e8b45a", [5, 4]], jlens_topk: ["#3dbd7d", [5, 4]]};
+  for (const [key, series] of Object.entries(em.series)) {
+    const [color, dash] = styles[key] || ["#8fa0b5", []];
+    ctx2.strokeStyle = color; ctx2.lineWidth = 1.4 * devicePixelRatio; ctx2.setLineDash(dash);
+    ctx2.beginPath();
+    series.forEach((p, i) => { i ? ctx2.lineTo(px(i), py(p)) : ctx2.moveTo(px(i), py(p)); });
+    ctx2.stroke(); ctx2.setLineDash([]);
+  }
+  ctx2.fillStyle = "#e9eef5";
+  ctx2.fillText(`tracking ${JSON.stringify(em.token)}${em.exact ? "" : " · top-k lower bound"}`,
+                padL, 10 * devicePixelRatio);
+}
+window.addEventListener("resize", () => { if (activeTab === "traces" && trEmergence) drawEmergence(); });
 
 // scope toggle: capture signals every token (slow, all-seeing) vs dark mode (just generate)
 const vizBtn = document.getElementById("vizbtn");
