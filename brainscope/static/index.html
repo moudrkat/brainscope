@@ -121,6 +121,12 @@
               height:26px; }
   .lenshead small { display:block; font-weight:600; font-size:8.5px; color:var(--live); }
   .lenscol.axis .lenshead { color:var(--faint); font-weight:400; }
+  /* what this moment saw coming — filled by the violet retro-paint */
+  .lensfuture { height:12px; font-size:9px; line-height:12px; color:#a99cff;
+                text-align:center; white-space:nowrap; overflow:hidden;
+                text-overflow:ellipsis; max-width:92px; padding:0 2px;
+                border-bottom:1px solid var(--line); margin-bottom:2px; }
+  .lenscol.axis .lensfuture { color:var(--faint); font-size:8px; }
   .lenscell { font-size:10px; line-height:13px; height:13px; padding:0 4px; min-width:56px;
               max-width:92px; overflow:hidden; white-space:pre; text-overflow:ellipsis;
               color:var(--muted); border-radius:2px; }
@@ -309,16 +315,16 @@
         <div id="lensgrid" class="lensgrid"></div>
       </div>
       <div class="panel" id="p-jlens">
-        <div class="pinfo">what each layer is disposed to make the model say <b>later</b> — activations
-          transported into final-layer space by an averaged Jacobian, then read out
-          (<span style="color:var(--accent)">Jacobian lens</span>, Anthropic 2026) ·
-          a word appearing here mid-generation is <i>represented and pushed toward future output</i>,
-          not necessarily emitted ·
-          compare with the logit lens: that one asks "what would come out <i>now</i>" ·
-          <span style="color:#a99cff">violet</span> = the word really arrives later in the answer —
-          the readout saw it coming (filled = top-1, outlined = in the cell's top-5) ·
-          <span style="color:var(--live)">green</span> = saying it right now ·
-          hover a cell for top-5, click to pin</div>
+        <div class="pinfo"><b>How to read this:</b> each column = the model writing one word.
+          The logit lens asks every layer "what would come out <i>now</i>" — this grid asks
+          "what are you disposed to say <b>later</b>".
+          <span style="color:#a99cff"><b>Violet = a word that really arrives later in the answer</b></span>
+          (filled: the cell's top guess · outlined: in its top-5) — the violet line under each
+          header sums up what that moment saw coming ·
+          <span style="color:var(--live)">green</span> = the word being written right now ·
+          faint cells = low probability, the lens's noise floor ·
+          hover for top-5, click to pin ·
+          <span style="color:var(--accent)">Jacobian lens</span>, Anthropic 2026</div>
         <div id="jlensgrid" class="lensgrid"></div>
       </div>
       <div class="panel" id="p-traces">
@@ -658,6 +664,11 @@ function ensureLensAxisIn(grid, n) {
   const col = document.createElement("div"); col.className = "lenscol axis";
   const head = document.createElement("div"); head.className = "lenshead"; head.textContent = "layer";
   col.appendChild(head);
+  if (grid._track) {   // tracked grids carry the "saw coming" strip — keep rows aligned
+    const fut = document.createElement("div"); fut.className = "lensfuture";
+    fut.textContent = "saw coming:";
+    col.appendChild(fut);
+  }
   for (let l = n; l >= 1; l--) {
     const cell = document.createElement("div"); cell.className = "lenscell";
     cell.textContent = (l === 1 || l === n || l % 4 === 0) ? l : "";
@@ -703,6 +714,12 @@ function addLensColTo(grid, lens, emitted, tipVerb, track) {
   depth.textContent = emerge ? `L${emerge}` : "—";
   head.appendChild(depth);
   col.appendChild(head);
+  let futEl = null;
+  if (track) {   // summary strip: which later words this moment already showed
+    futEl = document.createElement("div"); futEl.className = "lensfuture";
+    futEl.title = "words this step saw coming — filled in as the answer unfolds";
+    col.appendChild(futEl);
+  }
   const colCells = [], colTops = [];
   for (let l = lens.length - 1; l >= 0; l--) {
     const cell = document.createElement("div"); cell.className = "lenscell";
@@ -722,7 +739,7 @@ function addLensColTo(grid, lens, emitted, tipVerb, track) {
   }
   if (track) {
     if (!grid._cols) grid._cols = [];
-    grid._cols.push({cells: colCells, tops: colTops});
+    grid._cols.push({cells: colCells, tops: colTops, futEl, futWords: []});
   }
   // full answer stays scrollable; only follow the stream if the user is
   // already at the right edge (don't fight a hand that scrolled back)
@@ -745,6 +762,7 @@ function paintFutureHits(piece) {
   const start = Math.max(0, cols.length - 80);
   for (let c = start; c < cols.length; c++) {
     const {cells, tops} = cols[c];
+    let sawIt = false;
     for (let i = 0; i < tops.length; i++) {
       const cell = cells[i];
       if (cell._green || cell._future) continue;
@@ -765,9 +783,17 @@ function paintFutureHits(piece) {
       }
       cell._tip += `\n⇢ ${JSON.stringify(piece)} said ${dist} token(s) later` +
                    (rank > 0 ? ` (rank ${rank + 1} here)` : "");
+      sawIt = true;
+    }
+    const colObj = cols[c];
+    if (sawIt && colObj.futEl && !colObj.futWords.includes(piece.trim())) {
+      colObj.futWords.push(piece.trim());
+      colObj.futEl.textContent = colObj.futWords.join("·");
+      colObj.futEl.title = "saw coming: " + colObj.futWords.join(", ");
     }
   }
 }
+jlensGrid._track = true;
 const addJlensCol = (lens, emitted) => {
   paintFutureHits(emitted);            // earlier columns first — then this one
   addLensColTo(jlensGrid, lens, emitted, "pushes toward", true);
