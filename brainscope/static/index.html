@@ -318,9 +318,9 @@
         <div class="pinfo"><b>How to read this:</b> each column = the model writing one word.
           The logit lens asks every layer "what would come out <i>now</i>" — this grid asks
           "what are you disposed to say <b>later</b>".
-          <span style="color:#a99cff"><b>Violet = a word that really arrives later in the answer</b></span>
-          (filled: the cell's top guess · outlined: in its top-5) — the violet line under each
-          header sums up what that moment saw coming ·
+          <span style="color:#a99cff"><b>Violet cell = the word it shows really arrives later in the answer</b></span> ·
+          the violet line under each header sums up everything that moment saw coming
+          (including top-5 evidence — details in the tooltips) ·
           <span style="color:var(--live)">green</span> = the word being written right now ·
           faint cells = low probability, the lens's noise floor ·
           hover for top-5, click to pin ·
@@ -750,12 +750,13 @@ function addLensColTo(grid, lens, emitted, tipVerb, track) {
 const addLensCol = (lens, emitted) => addLensColTo(lensGrid, lens, emitted);
 
 // The J-lens grid's own signature: when a token is emitted, every EARLIER
-// column that already showed it lights up violet — the readout saw the word
-// coming before the logit lens could. Full violet = it was the cell's top-1;
-// violet outline = it sat in the cell's top-5 (common on bigger models,
-// where the future signal is real but rarely rank 1 mid-stack). This
-// retro-paint is what makes the panel visibly different from "layers over
-// time": it reads ahead.
+// cell whose DISPLAYED word is that token turns violet — a violet cell
+// always means exactly what it shows: this word arrived later. Words that
+// sat only in a cell's top-5 (common mid-stack on bigger models) never
+// color the cell — the cell displays a different word, and coloring it
+// would read as a false hit; they land in the per-column "saw coming"
+// strip and the cell tooltip instead. This retro-paint is what makes the
+// panel visibly different from "layers over time": it reads ahead.
 function paintFutureHits(piece) {
   const cols = jlensGrid._cols;
   if (!cols || !piece || piece.trim() === "") return;
@@ -765,24 +766,21 @@ function paintFutureHits(piece) {
     let sawIt = false;
     for (let i = 0; i < tops.length; i++) {
       const cell = cells[i];
-      if (cell._green || cell._future) continue;
+      if (cell._green) continue;
       const rank = tops[i].findIndex(e => e.t === piece);
       if (rank < 0) continue;
-      // outline hits (rank 2-5) only for substantive words — " is"/" of"
-      // recur constantly and would wash the panel in noise
+      // strip entries only for substantive words — " is"/" of" recur
+      // constantly and would wash the summary in noise
       if (rank > 0 && piece.trim().length < 3) continue;
-      cell._future = true;
       const p = tops[i][rank].p;
       const dist = cols.length - c;
-      if (rank === 0) {
+      if (rank === 0 && !cell._future) {
+        cell._future = true;
         cell.style.background = `rgba(139,127,245,${(0.2 + Math.min(0.6, p * 0.8)).toFixed(3)})`;
         cell.style.color = p > 0.5 ? "#0d0a24" : "#cfc8ff";
-      } else {
-        cell.style.boxShadow = "inset 0 0 0 1px rgba(139,127,245,.85)";
-        cell.style.color = "#cfc8ff";
       }
       cell._tip += `\n⇢ ${JSON.stringify(piece)} said ${dist} token(s) later` +
-                   (rank > 0 ? ` (rank ${rank + 1} here)` : "");
+                   (rank > 0 ? ` (rank ${rank + 1} in this cell)` : "");
       sawIt = true;
     }
     const colObj = cols[c];

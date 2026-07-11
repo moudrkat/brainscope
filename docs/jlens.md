@@ -92,12 +92,19 @@ the loaded model and warns when the fit came from a different model id.
 
 Reading the panel: a word in a J-lens cell is *pushed toward future output*
 at that layer — disposed to be said later, not necessarily next, not
-necessarily ever. When a word from the readout really arrives later in the
-answer, its earlier cells turn **violet** — the visible signature that this
-instrument reads ahead, unlike the per-step logit lens. Watch it during a
-`<think>` block: words surface here many tokens before they are verbalized
-(that's the workspace effect the paper is about), and the
-[traces](traces.md) emergence chart turns that impression into a curve.
+necessarily ever. When a cell's displayed word really arrives later in the
+answer, the cell turns **violet** — the visible signature that this
+instrument reads ahead, unlike the per-step logit lens. A violet cell
+always means exactly what it shows; words that sat only in a cell's top-5
+are summarized in the per-column **"saw coming"** strip and the tooltips
+instead of coloring cells that display something else. Don't take the
+colors on faith:
+[`examples/audit_jlens_hits.py`](../examples/audit_jlens_hits.py) replays
+the exact criterion over a stored trace and verifies every hit against the
+text the model actually produced. Watch the panel during a `<think>`
+block: words surface here many tokens before they are verbalized (that's
+the workspace effect the paper is about), and the [traces](traces.md)
+emergence chart turns that impression into a curve.
 
 ## Steering × J-lens
 
