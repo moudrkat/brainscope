@@ -62,6 +62,9 @@ class TraceStore:
                 self.index.append(self._entry(t))
             except (json.JSONDecodeError, KeyError):
                 continue
+        # oldest→newest, like the append order during a run — glob order is
+        # alphabetical by id, which scrambled "newest first" after a restart
+        self.index.sort(key=lambda e: e.get("ts") or "")
 
     def _entry(self, t: dict) -> dict:
         text = "".join(t.get("all_tokens", []))
