@@ -255,6 +255,10 @@ with the originals:
   from the paper (full citation + BibTeX in [docs/jlens.md](docs/jlens.md#citing));
   the A-lens ("answer lens") variant is a brainscope experiment on top of
   their estimator, not part of the published work.
+- **Workspace decomposition** - the sparse nonnegative recipe is from the
+  same Gurnee et al. paper; the pursuit algorithm family is Blumensath &
+  Davies, *Gradient Pursuits* (IEEE Trans. Signal Processing, 2008).
+  Experimental — see [docs/jlens.md](docs/jlens.md#workspace-decomposition-j-space-experimental).
 - **Concept-before-language** - Wendler et al., *Do Llamas Work in English?*
   (arXiv:2402.10588).
 - **Activation steering** - Turner et al., Zou et al., Rimsky et al.; cited in
