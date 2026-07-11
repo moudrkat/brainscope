@@ -66,6 +66,11 @@ GET /traces/{id}/emergence?token=Paris
 steering settings, or between the J-lens and the experimental
 [A-lens](jlens.md#a-lens-experimental-ours).
 
+With hidden states stored and a J-lens loaded, the replay also shows the
+experimental **workspace** row — the sparse J-space decomposition of each
+step's activation (see [jlens.md](jlens.md#workspace-decomposition-j-space-experimental)),
+including patterns the model held but never said.
+
 ## API summary
 
 | endpoint | what |
@@ -75,6 +80,7 @@ steering settings, or between the J-lens and the experimental
 | `DELETE /traces/{id}` | remove trace + hidden states |
 | `POST /traces/config` | `{"save": bool, "hidden": bool}` |
 | `GET /traces/{id}/emergence` | answer-emergence series (`?token=` to override) |
+| `GET /traces/{id}/workspace` | J-space decomposition per step (`?layer=&k=&method=gp\|mp`) |
 
 ## Honesty note
 

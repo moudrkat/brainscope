@@ -89,6 +89,27 @@ def test_jlens_direction_feeds_steering(client, fitted_lens):
     assert client.post("/jlens/direction", json={"text": ""}).status_code == 400
 
 
+def test_workspace_decomposition_endpoint(client, fitted_lens):
+    bs.state["jlens"] = fitted_lens
+    client.post("/traces/config", json={"hidden": True})
+    chat(client, max_tokens=6)
+    trace_id = bs.state["gen"]["id"]
+    r = client.get(f"/traces/{trace_id}/workspace", params={"k": 6, "method": "gp"})
+    assert r.status_code == 200, r.text
+    ws = r.json()
+    assert ws["k"] == 6 and ws["method"] == "gp"
+    step = ws["steps"][0]
+    assert 0 < step["explained"] <= 1.0
+    assert all(c["c"] > 0 for c in step["components"])
+    assert all(c["said"] in ("now", "future", "past", "unsaid")
+               for c in step["components"])
+    # without hidden states → helpful 400
+    client.post("/traces/config", json={"hidden": False})
+    chat(client, max_tokens=4)
+    r = client.get(f"/traces/{bs.state['gen']['id']}/workspace")
+    assert r.status_code == 400 and "hidden" in r.json()["error"]
+
+
 def test_emergence_tracks_overridden_token(client):
     client.post("/traces/config", json={"hidden": True})
     chat(client, max_tokens=8)

@@ -62,6 +62,29 @@ def test_position_masks_match_reference_reduction(tok):
     assert not bool(m_answer[0])       # the question is not
 
 
+def test_decompose_workspace(fitted_lens, model):
+    torch.manual_seed(1)
+    d = fitted_lens.hidden
+    W = model.get_output_embeddings().weight.detach().float()
+    # plant two known atoms with positive coefficients, plus noise
+    a1 = fitted_lens.direction(777, W)[1] * 5.0
+    a2 = fitted_lens.direction(4242, W)[1] * 3.0
+    hs = (a1 + a2).unsqueeze(0) + 0.05 * torch.randn(1, d)
+    for method in ("gp", "mp"):
+        res = fitted_lens.decompose(hs, layer=1, unembed_weight=W, k=6, method=method)
+        comps = res[0]["components"]
+        ids = [v for v, c in comps]
+        assert len(set(ids)) == len(ids)              # no atom twice
+        assert 777 in ids, method                     # planted components recovered
+        assert 4242 in ids, method
+        assert all(c > 0 for v, c in comps), method   # nonnegative
+        assert 0 < res[0]["explained"] <= 1.0
+    # gp explains at least as much as mp on the same input
+    gp = fitted_lens.decompose(hs, 1, W, k=6, method="gp")[0]["explained"]
+    mp = fitted_lens.decompose(hs, 1, W, k=6, method="mp")[0]["explained"]
+    assert gp >= mp - 0.05
+
+
 def test_answer_mode_fit_runs(model, tok):
     texts = [t + " </think> The final answer is forty two." for t in FIT_TEXTS[:6]]
     lens = jl.fit(model, tok, texts, mode="answer", repeats=4, max_tokens=64,

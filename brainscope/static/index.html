@@ -164,6 +164,14 @@
   #trlenses .lensgrid { flex:0 0 auto; }
   #trlenses .lenslabel { font-size:10px; color:var(--faint); text-align:center; margin-bottom:3px; }
   #emerge { height:170px; margin-top:10px; }
+  /* workspace chips: opacity ∝ coefficient · color = relation to the text */
+  #trwslabel { font-size:10px; color:var(--faint); margin:10px 0 4px; }
+  #trwschips { display:flex; flex-wrap:wrap; gap:4px; }
+  .wschip { border:1px solid var(--line); border-radius:9px; padding:1px 8px;
+            font-size:11px; color:var(--muted); background:var(--panel2); white-space:pre; }
+  .wschip.now { color:#bfe8d2; border-color:var(--live); }
+  .wschip.future { color:#cfc8ff; border-color:#8b7ff5; }
+  .wschip.unsaid { color:var(--faint); border-style:dashed; }
 
   #text .tok { border-radius:2px; }
   #text .tok:hover { outline:1px solid rgba(232,180,90,.5); cursor:pointer; }
@@ -345,6 +353,10 @@
             <span id="trstep"></span>
           </div>
           <div id="trlenses"></div>
+          <div id="trws" style="display:none">
+            <div id="trwslabel"></div>
+            <div id="trwschips"></div>
+          </div>
           <canvas id="emerge" class="pcanvas"></canvas>
           <div class="pcap" id="emergecap">answer emergence: p(first answer token), best layer per step ·
             <span style="color:var(--accent)">amber = logit lens</span> (would say it now) ·
@@ -1380,8 +1392,53 @@ async function openTrace(id) {
   });
   trScrub.max = Math.max(0, t.all_tokens.length - 1);
   trScrub.value = trScrub.max;
+  trWorkspace = null;
+  document.getElementById("trws").style.display = "none";
   renderScrub();
   fetchEmergence();
+  fetchWorkspace();
+}
+
+// EXPERIMENTAL J-space workspace: sparse nonnegative decomposition of stored
+// hidden states over the J-lens dictionary (needs hidden states + --jlens)
+let trWorkspace = null;
+async function fetchWorkspace() {
+  if (!trCurrent || !trCurrent.has_hidden) return;
+  const holder = document.getElementById("trws");
+  holder.style.display = "";
+  document.getElementById("trwslabel").textContent =
+    "workspace (J-space, experimental) — computing…";
+  const r = await fetch(`/traces/${trCurrent.id}/workspace`)
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) { holder.style.display = "none"; return; }
+  trWorkspace = r;
+  renderWorkspace();
+}
+function renderWorkspace() {
+  if (!trWorkspace || !trCurrent) return;
+  const s = +trScrub.value - (trCurrent.capture_offset || 0);
+  const holder = document.getElementById("trws");
+  if (s < 0 || s >= trWorkspace.steps.length) { holder.style.display = "none"; return; }
+  holder.style.display = "";
+  const step = trWorkspace.steps[s];
+  document.getElementById("trwslabel").textContent =
+    `workspace (J-space, experimental) — ${trWorkspace.method === "gp" ? "gradient" : "matching"} pursuit, ` +
+    `k=${trWorkspace.k}, L${trWorkspace.layer + 1} · explains ${(step.explained * 100).toFixed(0)}% ` +
+    `of this activation (the paper reports ≤10%, so small is expected) · ` +
+    `violet = arrives later · green = current word · dashed = never said`;
+  const chips = document.getElementById("trwschips");
+  chips.innerHTML = "";
+  const cmax = Math.max(...step.components.map(x => x.c), 1e-6);
+  for (const comp of step.components) {
+    const chip = document.createElement("span");
+    chip.className = "wschip" + (comp.said === "now" ? " now" :
+                                 comp.said === "future" ? " future" :
+                                 comp.said === "unsaid" ? " unsaid" : "");
+    chip.style.opacity = (0.45 + 0.55 * comp.c / cmax).toFixed(2);
+    chip.textContent = dispTok(comp.t);
+    chip.title = `coefficient ${comp.c} · ${comp.said}`;
+    chips.appendChild(chip);
+  }
 }
 
 function renderScrub() {
@@ -1410,7 +1467,7 @@ function renderScrub() {
     bindLensTips(grid);
   }
 }
-trScrub.addEventListener("input", renderScrub);
+trScrub.addEventListener("input", () => { renderScrub(); renderWorkspace(); });
 
 trTextEl.addEventListener("click", (ev) => {
   const sp = ev.target;

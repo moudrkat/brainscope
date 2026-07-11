@@ -1101,6 +1101,61 @@ async def trace_emergence(trace_id: str, token: str | None = None):
     return JSONResponse(out, status_code=status)
 
 
+@app.get("/traces/{trace_id}/workspace")
+async def trace_workspace(trace_id: str, layer: int = -1, k: int = 16,
+                          method: str = "gp"):
+    """EXPERIMENTAL J-space workspace contents per step: sparse nonnegative
+    decomposition of the stored hidden states over the J-lens dictionary
+    (paper recipe: gradient pursuit, k<=25; `method=mp` for the simpler
+    matching-pursuit comparison). Needs a trace saved with hidden states and
+    a loaded J-lens. `explained` per step shows how much of the activation
+    the J-space component actually carries (the paper reports <=10%)."""
+    store, jl = state["traces"], state["jlens"]
+    t = store.load(trace_id) if store else None
+    if t is None:
+        return JSONResponse({"error": "unknown trace"}, status_code=404)
+    if jl is None:
+        return JSONResponse({"error": "no J-lens loaded"}, status_code=400)
+    if method not in ("gp", "mp"):
+        return JSONResponse({"error": "method must be gp or mp"}, status_code=400)
+    hidden = store.hidden(trace_id)
+    if hidden is None:
+        return JSONResponse({"error": "trace has no hidden states — enable them "
+                             "first: POST /traces/config {\"hidden\": true}"},
+                            status_code=400)
+    n_layers = hidden.shape[1]
+    if layer < 0:
+        layer = round(n_layers * 0.45)
+    if not 0 <= layer < n_layers:
+        return JSONResponse({"error": f"layer out of range 0..{n_layers - 1}"},
+                            status_code=400)
+    k = max(1, min(int(k), 25))
+    tok = state["tokenizer"]
+    W = state["model"].get_output_embeddings().weight.detach().float()
+    off = t.get("capture_offset", 1)
+    all_toks = t["all_tokens"]
+
+    def run():
+        res = jl.decompose(hidden[:, layer, :].float(), layer, W, k=k, method=method)
+        steps = []
+        for s, r in enumerate(res):
+            comps = []
+            for v, c in r["components"]:
+                piece = tok.decode(v)
+                pos = s + off
+                occ = [i for i, p in enumerate(all_toks) if p == piece]
+                said = ("now" if pos in occ else
+                        "future" if any(i > pos for i in occ) else
+                        "past" if occ else "unsaid")
+                comps.append({"t": piece, "c": c, "said": said})
+            steps.append({"components": comps, "explained": r["explained"]})
+        return steps
+
+    steps = await asyncio.to_thread(run)
+    return {"id": trace_id, "layer": layer, "k": k, "method": method,
+            "steps": steps}
+
+
 @app.post("/stop")
 async def stop():
     # cooperative cancel: the decode loop checks state["stop"] each token, so

@@ -101,6 +101,76 @@ class JacobianLens:
         dirs = torch.einsum("lji,j->li", self.J, w)                   # [n_layers, d]
         return dirs / (dirs.norm(dim=-1, keepdim=True) + 1e-8)
 
+    @torch.no_grad()
+    def decompose(self, hs: torch.Tensor, layer: int, unembed_weight: torch.Tensor,
+                  k: int = 16, method: str = "gp") -> list[dict]:
+        """EXPERIMENTAL J-space decomposition: express each state as a sparse
+        NONNEGATIVE combination of k J-lens vectors {J_lᵀ·W_U[v]/‖·‖} — "which
+        word-linked patterns, added together, make up this state?" Unlike the
+        top-k readout (a softmax ranking where strong components eclipse weak
+        ones), every selected component gets its own additive coefficient.
+
+        Follows the paper's recipe: "we solve for a sparse nonnegative
+        combination of k J-lens vectors ... using gradient pursuit"; they use
+        k ≤ 25 (16 for verbal-report decomposition) and report that the
+        J-space component carries no more than ~10% of activation variance —
+        `explained` in the output lets you verify that caveat yourself.
+
+        method="gp": gradient pursuit (select by max positive correlation,
+        then one exact-line-search gradient step on the active set, projected
+        to c ≥ 0 — Blumensath & Davies 2008 flavour).
+        method="mp": plain matching pursuit (kept for comparison).
+
+        hs: [steps, d] residuals at `layer` (stored trace hidden states).
+        Returns per step: {"components": [(token_id, coeff), ...] sorted by
+        coeff desc, "explained": fraction of squared norm captured}."""
+        assert method in ("gp", "mp"), method
+        J = self.J[layer]                                    # [d, d]
+        W = unembed_weight.to(J.device, J.dtype)             # [vocab, d]
+        JW = W @ J                                           # rows = w_vᵀ J_l  [vocab, d]
+        norms = JW.norm(dim=1).clamp_min(1e-6)
+        H = hs.to(J.device, J.dtype)                         # [steps, d]
+        n_steps = H.shape[0]
+        R = H.clone()
+        active = torch.full((n_steps, k), -1, dtype=torch.long)
+        coeffs = torch.zeros(n_steps, k, dtype=J.dtype)
+        for it in range(k):
+            corr = (R @ JW.T) / norms                        # [steps, vocab]
+            for s in range(n_steps):                         # no atom twice
+                prev = active[s, :it]
+                corr[s, prev[prev >= 0]] = -torch.inf
+            best = corr.argmax(dim=1)                        # nonneg: max positive
+            active[:, it] = best
+            for s in range(n_steps):
+                A = active[s, : it + 1]
+                D = JW[A] / norms[A, None]                   # [it+1, d] unit atoms
+                if method == "mp":
+                    c = float(R[s] @ D[-1])
+                    if c > 0:
+                        coeffs[s, it] = c
+                        R[s] -= c * D[-1]
+                    continue
+                # gradient pursuit: one exact-line-search step on the active set
+                g = D @ R[s]                                 # gradient wrt c_A
+                Dg = g @ D                                   # direction in h-space
+                denom = float(Dg @ Dg)
+                if denom < 1e-12:
+                    continue
+                alpha = float(R[s] @ Dg) / denom
+                c_new = (coeffs[s, : it + 1] + alpha * g).clamp_min(0)   # project c >= 0
+                coeffs[s, : it + 1] = c_new
+                R[s] = H[s] - c_new @ D
+        out = []
+        h_sq = (H * H).sum(dim=1).clamp_min(1e-9)
+        r_sq = (R * R).sum(dim=1)
+        for s in range(n_steps):
+            comps = [(int(active[s, i]), round(float(coeffs[s, i]), 4))
+                     for i in range(k) if coeffs[s, i] > 1e-6]
+            comps.sort(key=lambda x: -x[1])
+            out.append({"components": comps,
+                        "explained": round(float(1 - r_sq[s] / h_sq[s]), 4)})
+        return out
+
     def identity_error(self) -> float:
         """Relative error of the final layer's J against the identity — the
         estimator's built-in self-test (should be well under 1 after a

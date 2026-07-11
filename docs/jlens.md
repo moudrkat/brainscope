@@ -141,6 +141,40 @@ Rows are unit-normalized, so start around the prefilled strength and treat
 it like any other direction (see [steering.md](steering.md) for the
 over-steering lessons — they all apply).
 
+## Workspace decomposition (J-space, experimental)
+
+The readout grid answers "what does this activation *look most like*" — a
+softmax ranking, where strong components eclipse weak ones. The paper's
+J-space is a different construct: express the activation as a **sparse
+nonnegative combination of J-lens vectors** ("we solve for a sparse
+nonnegative combination of k J-lens vectors … using gradient pursuit",
+k ≤ 25), so every held pattern gets its own additive coefficient — including
+content that never wins any top-5 and is never said.
+
+brainscope implements this post-hoc over stored traces: open a trace saved
+with hidden states (and a loaded `--jlens`) and a **workspace** row appears
+under the replay — the decomposition of that step's residual at a mid-stack
+layer, chips sized by coefficient, violet = arrives later in the answer,
+green = the current word, dashed = never said. The label reports the
+**fraction of activation variance the J-space component explains**; the
+paper reports ≤10%, and that's what you should see (we measure ~8–13% on
+our fits) — most of an activation is *not* verbalizable content, and a
+workspace view that claimed otherwise would be broken.
+
+```
+GET /traces/{id}/workspace?layer=&k=16&method=gp   # or method=mp
+```
+
+`method=gp` is gradient pursuit as in the paper (greedy selection by
+positive correlation + an exact-line-search gradient step on the active
+set, coefficients projected to ≥ 0); `method=mp` is plain matching pursuit,
+kept for comparison — gp explains at least as much variance by
+construction. Honesty notes: the paper does not publish their exact
+gradient-pursuit variant, so this is a faithful-in-spirit implementation of
+the stated recipe, labeled experimental; on small models the coefficient
+tail is noisy (the lens dictionary inherits the fit's noise floor) — the
+leading components are the meaningful ones.
+
 ## A-lens (experimental, ours)
 
 Anthropic's J-lens averages influence over *all* future tokens. For
