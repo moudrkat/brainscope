@@ -169,7 +169,15 @@ brainscope implements this post-hoc over stored traces: open a trace saved
 with hidden states (and a loaded `--jlens`) and a **workspace** row appears
 under the replay — the decomposition of that step's residual at a mid-stack
 layer, chips sized by coefficient, violet = arrives later in the answer,
-green = the current word, dashed = never said. The label reports the
+green = the current word, dashed = never said.
+
+![Workspace row: while writing " of", the components are residence (dashed — held, never said), comma, is and Paris in violet (they arrive later), then a dim noise tail](img/workspace-decomposition.png)
+
+*Qwen3-4B writing " of" in "The capital of France is Paris." The strongest
+workspace component is " residence" — held, never said; " is", " Paris" and
+the comma follow in violet (they really arrive later). The dim tail is the
+dictionary's noise floor, and the label owns it: this decomposition explains
+7% of the activation — consistent with the paper's ≤10%.* The label reports the
 **fraction of activation variance the J-space component explains**; the
 paper reports ≤10%, and that's what you should see (we measure ~8–13% on
 our fits) — most of an activation is *not* verbalizable content, and a
