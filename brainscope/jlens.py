@@ -105,26 +105,40 @@ class JacobianLens:
         return float((self.J[-1].cpu() - eye).norm() / eye.norm())
 
 
-def _target_mask(text: str, tokenizer, ids: torch.Tensor, mode: str, marker: str) -> torch.Tensor:
+# Positions before this index are excluded from the Jacobian average on both
+# the source and target side — early positions act as attention sinks with
+# atypical residual statistics, and the final position has no next-token
+# target. Matches the reference implementation's reduction (verified against
+# jlens/fitting.py by reading, 2026-07-11; their SKIP_FIRST_N_POSITIONS=16).
+SKIP_FIRST_POSITIONS = 16
+
+
+def _valid_mask(seq: int, skip_first: int) -> torch.Tensor:
+    """Bool [seq]: positions included in the Jacobian average (source side)."""
+    mask = torch.zeros(seq, dtype=torch.bool)
+    mask[min(skip_first, max(0, seq - 2)): seq - 1] = True
+    return mask
+
+
+def _target_mask(text: str, tokenizer, ids: torch.Tensor, mode: str, marker: str,
+                 skip_first: int = SKIP_FIRST_POSITIONS) -> torch.Tensor:
     """Bool [seq]: which positions count as lens targets t'."""
     seq = ids.shape[-1]
-    mask = torch.zeros(seq, dtype=torch.bool)
-    if mode == "future":
-        mask[:] = True
-    else:  # answer mode: everything after the marker; last quarter as fallback
+    mask = _valid_mask(seq, skip_first)
+    if mode == "answer":   # only positions after the marker; last quarter fallback
         cut = text.find(marker)
         if cut >= 0:
             prefix = tokenizer(text[: cut + len(marker)], return_tensors="pt").input_ids
             start = min(seq - 1, prefix.shape[-1])
         else:
             start = int(seq * 0.75)
-        mask[start:] = True
+        mask[:start] = False
     return mask
 
 
 def fit(model, tokenizer, texts, *, mode: str = "future", marker: str = "</think>",
         repeats: int = 16, max_tokens: int = 128, seed: int = 0,
-        progress=None) -> JacobianLens:
+        skip_first: int = SKIP_FIRST_POSITIONS, progress=None) -> JacobianLens:
     """Fit a Jacobian lens on raw texts. See module docstring for the math.
 
     Cost: len(texts) × repeats forward+backward passes of <= max_tokens.
@@ -144,23 +158,25 @@ def fit(model, tokenizer, texts, *, mode: str = "future", marker: str = "</think
                         max_length=max_tokens).input_ids.to(device)
         if ids.shape[-1] < 8:
             continue
-        mask = _target_mask(text, tokenizer, ids, mode, marker).to(device)
-        if not bool(mask.any()):
+        seq = ids.shape[-1]
+        tmask = _target_mask(text, tokenizer, ids, mode, marker, skip_first).to(device)
+        smask = _valid_mask(seq, skip_first).to(device)   # source-side positions
+        if not bool(tmask.any()):
             continue
         with torch.enable_grad():
             out = model(input_ids=ids, output_hidden_states=True, use_cache=False)
             hs = out.hidden_states[1:]          # per-layer outputs, [1, seq, d] each
             h_final = hs[-1]
             for r in range(repeats):
-                u = torch.randn_like(h_final) * mask[None, :, None]
+                u = torch.randn_like(h_final) * tmask[None, :, None]
                 s = (u * h_final).sum()
                 grads = torch.autograd.grad(s, hs, retain_graph=r < repeats - 1)
                 u_sum = u[0].sum(0).float().cpu()                     # [d]
                 if acc is None:
                     acc = torch.zeros(len(hs), u_sum.shape[0], u_sum.shape[0])
                 for l, g in enumerate(grads):
-                    acc[l] += torch.outer(u_sum, g[0].sum(0).float().cpu())
-                count += float(mask.sum())
+                    acc[l] += torch.outer(u_sum, g[0][smask].sum(0).float().cpu())
+                count += float(tmask.sum())
                 n_samples += 1
         del out, hs, h_final
         if device.type == "cuda":
@@ -175,7 +191,8 @@ def fit(model, tokenizer, texts, *, mode: str = "future", marker: str = "</think
     meta = {"model": getattr(getattr(model, "config", None), "_name_or_path", "?"),
             "mode": mode, "marker": marker if mode == "answer" else None,
             "n_texts": len(texts), "repeats": repeats, "n_samples": n_samples,
-            "max_tokens": max_tokens, "seed": seed, "format": FORMAT_VERSION,
+            "max_tokens": max_tokens, "seed": seed, "skip_first": skip_first,
+            "format": FORMAT_VERSION,
             "fitted_at": time.strftime("%Y-%m-%d %H:%M:%S")}
     lens = JacobianLens(J, meta)
     meta["identity_error"] = round(lens.identity_error(), 4)
@@ -265,6 +282,7 @@ def _cmd_fit(args) -> None:
               "the estimate will be noisy (aim for >= 2×hidden)", flush=True)
     lens = fit(model, tok, texts, mode=args.mode, marker=args.marker,
                repeats=args.repeats, max_tokens=args.max_tokens, seed=args.seed,
+               skip_first=args.skip_first,
                progress=lambda m: print(m, flush=True))
     lens.save(args.out)
     print(f"jlens: saved {args.out} · layers {lens.n_layers} · hidden {lens.hidden} "
@@ -312,6 +330,9 @@ def main() -> None:
     f.add_argument("--max-tokens", type=int, default=128)
     f.add_argument("--device", default=None)
     f.add_argument("--seed", type=int, default=0)
+    f.add_argument("--skip-first", type=int, default=SKIP_FIRST_POSITIONS,
+                   help="exclude the first N positions from the average "
+                        "(attention sinks; matches the reference implementation)")
     f.set_defaults(func=_cmd_fit)
 
     g = sub.add_parser("gen-traces",

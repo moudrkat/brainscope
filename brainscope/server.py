@@ -1028,9 +1028,12 @@ async def jlens_direction(body: dict):
     dirs = jl.direction(ids[0], head.weight.detach().float().cpu())
     name = body.get("name") or f"j:{text}"
     state["directions"][name] = dirs.to(state["device"])
+    # rows are unit-normalized: gentle strength over a NARROW mid-stack band —
+    # ~1.5 @ 3 layers reads naturally, 4+ over a wide band collapses small
+    # models into chanting the word (measured on Qwen2.5-0.5B)
     n = jl.n_layers
-    state["dir_meta"][name] = {"layer_from": round(n / 3), "layer_to": round(2 * n / 3),
-                               "strength": 6.0}
+    state["dir_meta"][name] = {"layer_from": round(n * 0.42), "layer_to": round(n * 0.54),
+                               "strength": 1.5}
     _persist_directions()
     return {"name": name, "token": piece, "multi_token": len(ids) > 1,
             "directions": sorted(state["directions"])}

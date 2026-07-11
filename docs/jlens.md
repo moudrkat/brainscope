@@ -33,7 +33,18 @@ weighted by measured causal influence on future outputs.
 
 brainscope estimates `J_l` with stochastic vector-Jacobian probes — one
 backward pass per random probe, accumulating rank-1 samples (see the module
-docstring for the derivation). Two built-in health checks:
+docstring for the derivation).
+
+**Fidelity to the reference.** We cross-checked (by reading, not copying)
+against `jlens/fitting.py` in Anthropic's reference repo: it computes the
+same reduction — mean over source positions of the sum over later target
+positions — exactly, one output dimension at a time (`d_model` backwards
+per prompt); ours estimates the identical matrix stochastically (a handful
+of backwards per prompt, more prompts), differing only by a per-layer
+scalar that the RMS-normalized readout cancels. Their position masking —
+skip the first 16 positions (attention sinks) and the final one, on both
+source and target side — is adopted verbatim (`--skip-first`). Two built-in
+health checks:
 
 - **identity self-test** — `∂h_final/∂h_final = I` exactly, so the fitted
   final layer must converge to the identity; `identity_error` in the

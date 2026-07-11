@@ -46,20 +46,27 @@ def test_transport_and_direction(fitted_lens, model):
     assert torch.allclose(dirs.norm(dim=-1), torch.ones(fitted_lens.n_layers), atol=1e-4)
 
 
-def test_answer_mode_masks_targets(tok):
+def test_position_masks_match_reference_reduction(tok):
+    """First skip_first positions (attention sinks) and the final position are
+    excluded, as in the reference implementation; answer mode additionally
+    drops everything before the marker."""
     text = "Question here. <think>some reasoning</think> The answer is 42."
     ids = tok(text, return_tensors="pt").input_ids
-    m_future = jl._target_mask(text, tok, ids, "future", "</think>")
-    m_answer = jl._target_mask(text, tok, ids, "answer", "</think>")
-    assert bool(m_future.all())
+    seq = ids.shape[-1]
+    m_future = jl._target_mask(text, tok, ids, "future", "</think>", skip_first=4)
+    m_answer = jl._target_mask(text, tok, ids, "answer", "</think>", skip_first=4)
+    assert not m_future[:4].any() and not m_future[-1]
+    assert bool(m_future[4:seq - 1].all())
     assert 0 < int(m_answer.sum()) < int(m_future.sum())
-    assert bool(m_answer[-1])          # the answer tail is targeted
+    assert bool(m_answer[-2])          # the answer tail is targeted
     assert not bool(m_answer[0])       # the question is not
 
 
 def test_answer_mode_fit_runs(model, tok):
     texts = [t + " </think> The final answer is forty two." for t in FIT_TEXTS[:6]]
-    lens = jl.fit(model, tok, texts, mode="answer", repeats=4, max_tokens=64)
+    lens = jl.fit(model, tok, texts, mode="answer", repeats=4, max_tokens=64,
+                  skip_first=4)
     assert lens.meta["mode"] == "answer"
     assert lens.meta["marker"] == "</think>"
+    assert lens.meta["skip_first"] == 4
     assert lens.J.shape[0] == model.config.num_hidden_layers
