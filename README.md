@@ -13,6 +13,13 @@ view into the residual stream. Three things it does:
   attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
   drive it from a slider, per request, or by a tag-matched policy.
+- **Read what's on the model's mind** — a [J-lens](#j-lens-whats-on-the-models-mind)
+  (Jacobian lens, Anthropic 2026) readout next to the logit lens: concepts the
+  model is holding silently, before — or without — saying them. Type a word to
+  turn it into a steering vector and nudge what it's thinking about.
+- **Inspect reasoning traces** — every generation can be persisted, replayed
+  token by token, and analyzed: when did the answer emerge inside the
+  `<think>` block, and which lens saw it first?
 - **Audit baked personas** — a 9 KB weights patch can turn a model into a
   covert advocate
   ([hidden-directions](https://github.com/moudrkat/hidden-directions), the
@@ -88,6 +95,11 @@ four instruments:
 - **logit lens** (click lm_head) - every layer's next-token readout: watch
   the answer crystallize with depth. Hover a cell for the top-5 candidates,
   click to pin the tooltip.
+- **J-lens** (with `--jlens`) - the same grid, but reading what each layer
+  is disposed to make the model say *later* - silent concepts, see
+  [below](#j-lens-whats-on-the-models-mind).
+- **traces** (with `--traces`) - stored generations: replay any of them with
+  a scrubber and chart when the answer emerged inside the think block.
 - **the answer text is an instrument too** - each word is tinted by the
   layer where its prediction settled (clean = early, amber = late, red =
   never before lm_head); hovering shows what the model almost said instead.
@@ -106,6 +118,80 @@ decode the meaning - in English and Chinese - while the Czech surface form
 assembles only in the last few layers: the geometry of multilingual
 representations, studied properly in Wendler et al. 2024 (arXiv:2402.10588).
 Readouts are a raw logit lens, so mid-stack tokens are approximate.*
+
+## J-lens (what's on the model's mind)
+
+The logit lens asks every layer "what would you say if you stopped *now*".
+The **Jacobian lens** asks the better question: "what is this activation
+disposed to make the model say *later*"? Anthropic introduced it in
+[*A global workspace in language models*](https://www.anthropic.com/research/global-workspace)
+(2026): average, over many prompts and positions, the Jacobian of the final
+hidden state with respect to each layer's hidden state, and use that matrix
+to transport activations into final-layer space before the usual unembedding
+readout. The vocabulary patterns it picks out — what the paper calls
+**J-space** — light up for concepts the model is holding *silently*: a word
+appearing in the J-lens panel mid-reasoning is on the model's mind, not
+necessarily in its output.
+
+brainscope ships an independent MIT reimplementation (`brainscope/jlens.py`)
+of the method — no code from Anthropic's
+[Apache-2.0 reference implementation](https://github.com/anthropics/jacobian-lens),
+just the published math. Fit a lens once per model, then serve with it:
+
+```bash
+brainscope-jlens fit --model qwen3-4b --prompts wikitext --out lenses/qwen3-4b.pt
+brainscope --model qwen3-4b --jlens lenses/qwen3-4b.pt --traces traces/
+```
+
+Fitting is the heavy part (one forward+backward per probe — minutes on a
+GPU, hours on CPU for non-tiny models; the artifact is then a few hundred
+MB of fp16 matrices and the per-token readout is one extra matmul per
+layer). Everything stays switchable at runtime: the **◎ j-lens** header
+button (or `POST /jlens {"on": false}`) turns the readout off without a
+restart, same as ◉ capture.
+
+**Steering × J-lens.** Every vocabulary token has a J-space direction — the
+per-layer activation pattern that, to first order, makes the model more
+likely to say it later. Type a word into the header box (or
+`POST /jlens/direction {"text": "cake"}`) and it becomes a normal
+`[n_layers, hidden]` steering direction for the slider, stacks, per-request
+steering and policies. Nudge what the model is thinking about, and watch
+the J-lens panel to see whether it took — injection and readout in one
+instrument.
+
+**A-lens (experimental, ours).** The paper's J-lens averages influence over
+*all* future tokens and only sees single-token concepts. `--mode answer`
+fits the same estimator with targets restricted to the tokens *after*
+`</think>` — causal influence on the eventual answer only, ignoring the
+verbal reasoning in between. Fit it on real traces from your model
+(`brainscope-jlens gen-traces` collects them from a running server) and
+compare both lenses in the emergence chart. Honesty note: this is a
+brainscope experiment, not a published technique — the emergence view is
+exactly the place to check whether it earns its keep.
+
+## Reasoning traces
+
+Start with `--traces DIR` and every generation is persisted: tokens,
+per-layer norms, both lens readouts, steering state, and the
+`<think>…</think>` segmentation. The **traces** tab lists them; click one to
+replay it — scrub through the generation token by token, watching both
+lens columns for that step, with the think block dimmed.
+
+Below the scrubber, the **answer-emergence chart**: for the token that
+opens the final answer (or any word you click), its probability at every
+reasoning step — best layer, under each lens. The J-lens curve rising while
+the model is still "thinking" is the global-workspace effect the paper
+describes: the answer held silently before it is verbalized; the vertical
+line marks where `</think>` ends. By default the curve is a top-k lower
+bound from the stored readouts; flip **hidden: on** (`POST /traces/config
+{"hidden": true}`) to keep full per-token hidden states with each trace
+(the heavy option — tens of MB per trace) and the curves become exact.
+
+Reasoning models' visible chain-of-thought is not a faithful account of the
+computation — that's the point of looking at activations instead. The trace
+inspector *illustrates* where the answer surfaces; measuring faithfulness
+properly is its own research field (see Anthropic's reasoning-faithfulness
+work and the workspace paper's caveats).
 
 ## Steering
 
@@ -173,6 +259,14 @@ with the originals:
 - **Logit lens** - nostalgebraist, *interpreting GPT: the logit lens*
   (LessWrong, 2020); the cleaned-up successor is the tuned lens, Belrose
   et al. (arXiv:2303.08112).
+- **Jacobian lens / J-space** - Anthropic, *A global workspace in language
+  models* ([announcement](https://www.anthropic.com/research/global-workspace),
+  [paper](https://transformer-circuits.pub/2026/workspace/index.html), 2026);
+  reference implementation
+  [anthropics/jacobian-lens](https://github.com/anthropics/jacobian-lens)
+  (Apache-2.0). brainscope's `jlens.py` is an independent reimplementation
+  from the paper; the A-lens ("answer lens") variant is a brainscope
+  experiment on top of their estimator, not part of the published work.
 - **Concept-before-language** - Wendler et al., *Do Llamas Work in English?*
   (arXiv:2402.10588).
 - **Activation steering** - Turner et al., Zou et al., Rimsky et al.; cited in

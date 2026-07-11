@@ -14,11 +14,28 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install from a clean checkout
-        run: pip install .
+        run: pip install .[test]
       - name: Smoke test
         run: |
           python -c "from brainscope.server import STATIC; assert STATIC.exists(), 'static assets missing from package'"
           brainscope --help
+          brainscope-jlens --help
+      - name: Unit + API tests (tiny random model, CPU)
+        run: pytest -q
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install with test extras
+        run: pip install .[test]
+      - name: Install chromium
+        run: playwright install --with-deps chromium
+      - name: Browser tests
+        run: pytest -q -m ui --override-ini "addopts="
 
   docker:
     needs: test

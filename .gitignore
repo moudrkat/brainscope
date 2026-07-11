@@ -6,3 +6,6 @@ dist/
 .idea/
 uv.lock
 build/
+lenses/
+traces/
+.pytest_cache/

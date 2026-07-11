@@ -10,11 +10,21 @@ dependencies = ["fastapi", "uvicorn[standard]", "transformers", "torch", "accele
 [project.urls]
 Homepage = "https://github.com/moudrkat/brainscope"
 
+[project.optional-dependencies]
+test = ["pytest", "httpx", "playwright"]
+
 [project.scripts]
 brainscope = "brainscope.server:main"
+brainscope-jlens = "brainscope.jlens:main"
 
 [tool.setuptools]
 packages = ["brainscope"]
 
 [tool.setuptools.package-data]
 brainscope = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["ui: browser tests (need `playwright install chromium`)"]
+addopts = "-m 'not ui'"
+
