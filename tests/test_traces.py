@@ -55,6 +55,9 @@ def test_store_reload_orders_by_time_not_id(tmp_path):
     store.save({**base, "id": "0" * 12}, "m")
     reloaded = tr.TraceStore(tmp_path)
     assert [e["id"] for e in reloaded.list()] == ["0" * 12, "f" * 12]  # newest first
+
+
+def test_emergence_topk_and_exact(model, tok):
     """Fabricated trace: the answer token sits in the stored top-k of the
     later steps only — emergence must find the first step it crosses 0.1."""
     piece = " Paris"
