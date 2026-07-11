@@ -159,11 +159,13 @@ an **answer-emergence chart**: for the token that opens the final answer
 (or any word you click), its probability at every reasoning step, under
 each lens. When did it actually decide, and which lens saw it first?
 
-![Trace replay with the answer-emergence chart: the green J-lens curve rises before the amber logit-lens curve](docs/img/answer-emergence.png)
+![Trace replay with the answer-emergence chart: an early green J-lens bump while the amber logit lens is still flat](docs/img/answer-emergence.png)
 
-*Replaying a trace, tracking " Paris": the green J-lens curve rises steps
-before the amber logit lens does — the readout holds the word before the
-model says it.*
+*Replaying a trace, tracking " Paris". The leftmost green bump is the
+point: while the model is still writing " of", the J-lens already reads
+" Paris" at p ≈ 0.4 — the logit lens sits at ~0.0002 there and only spikes
+once the word is actually being written. Later peaks coincide by nature:
+whenever the word is being emitted, both lenses see it.*
 
 > **→ [docs/traces.md](docs/traces.md)** - replay, the emergence chart and
 > its honest limits, the API, and storage costs.
