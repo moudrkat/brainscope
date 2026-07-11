@@ -83,6 +83,8 @@ Pointing your app at it is one line - wherever it builds its OpenAI client:
 client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 ```
 
+![The whole instrument: the model architecture on the left, the logit-lens grid open on the right, the generated answer below](docs/img/ui-overview.png)
+
 ## What am I looking at?
 
 Left: the model itself - the prompt enters at the bottom, one **clickable row
