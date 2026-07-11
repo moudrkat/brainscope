@@ -267,14 +267,25 @@ def _stack_last(hidden_states) -> torch.Tensor:
     return torch.stack([h[0, -1] for h in hidden_states[1:]])
 
 
-def _topk_readout(z: torch.Tensor, top: int = 5):
+def _topk_readout(z: torch.Tensor, top: int = 5, last_normed: bool = False):
     """Final norm + lm_head over a [n_layers, hidden] stack already sitting
-    in (or transported into) final-layer space — shared by both lenses."""
+    in (or transported into) final-layer space — shared by both lenses.
+
+    last_normed: HF's output_hidden_states returns the LAST entry with the
+    final norm already applied, so norming it again would scale by the norm
+    weight twice — which visibly reorders the readout exactly at contested
+    tokens, where the top row must instead match what was actually sampled.
+    The J-lens keeps the double norm: its transport was fitted onto the
+    post-norm target, so that convention is baked into the lens file."""
     norm, head = _final_norm_and_head()
     if norm is None or head is None:
         return None
     dtype = next(head.parameters()).dtype
-    probs = torch.softmax(head(norm(z.to(dtype))).float(), dim=-1)
+    z = z.to(dtype)
+    zn = norm(z)
+    if last_normed:
+        zn = torch.cat([zn[:-1], z[-1:]])
+    probs = torch.softmax(head(zn).float(), dim=-1)
     p, idx = probs.topk(top, dim=-1)
     tok = state["tokenizer"]
     return [[{"t": tok.decode(int(idx[layer, k])), "p": round(float(p[layer, k]), 4)}
@@ -285,7 +296,7 @@ def _logit_lens(hs: torch.Tensor, top: int = 5):
     """What the model would say if it stopped at each layer: every layer's
     hidden state pushed through the final norm + lm_head. Watching the answer
     crystallize with depth is the point of the exercise."""
-    return _topk_readout(hs, top)
+    return _topk_readout(hs, top, last_normed=True)
 
 
 def _jlens_readout(hs: torch.Tensor, top: int = 5):

@@ -17,6 +17,17 @@ def test_chat_completion_and_capture(client):
     assert r["all_tokens"] == g["all_tokens"]
 
 
+def test_final_lens_row_matches_sampled_token(client):
+    # the top logit-lens row is the sampling distribution itself: under
+    # greedy decoding its argmax must be the token that was actually emitted
+    # (double-norming the post-norm final hidden state used to flip this
+    # at contested tokens)
+    chat(client, "Hello there", temperature=0, max_tokens=16)
+    g = bs.state["gen"]
+    for tok_str, readout in zip(g["tokens"], g["lens"]):
+        assert readout[-1][0]["t"] == tok_str
+
+
 def test_raw_content_keeps_think_block(client):
     resp = chat(client, "Hi", raw=True)
     assert "raw_content" in resp["choices"][0]["message"]

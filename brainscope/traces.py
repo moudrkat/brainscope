@@ -191,7 +191,10 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
         hs = hidden.to(device=head_param.device, dtype=head_param.dtype)
         exact = []
         for s in range(hs.shape[0]):
-            probs = torch.softmax(head(norm(hs[s])).float(), dim=-1)   # [n_layers, vocab]
+            # the last stored row is already post-final-norm (HF convention);
+            # norming it twice reorders the readout exactly at contested tokens
+            z = torch.cat([norm(hs[s][:-1]), hs[s][-1:]])
+            probs = torch.softmax(head(z).float(), dim=-1)   # [n_layers, vocab]
             exact.append(round(float(probs[:, a_id].max()), 4))
         series["logit_lens"] = exact
         if jlens is not None:
