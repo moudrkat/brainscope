@@ -122,41 +122,34 @@ Readouts are a raw logit lens, so mid-stack tokens are approximate.*
 
 ## J-lens (reading ahead of the output)
 
-The logit lens asks every layer "what would come out if you stopped *now*".
-The **Jacobian lens** (Anthropic,
+The logit lens reads what each layer would say *now*; the **J-lens**
+(Jacobian lens — Anthropic,
 [*A global workspace in language models*](https://www.anthropic.com/research/global-workspace),
-2026) asks the better question: "what is this activation disposed to make
-the model say *later*?" — its readouts light up for words that are
-represented and pushed toward future output before any of it is emitted.
-brainscope
-ships an independent MIT reimplementation: fit a lens once per model, serve
-with `--jlens`, and a second lens grid appears — plus **steering × J-lens**:
-type any word and it becomes a steering vector that nudges what the model
-is thinking about, with the panel as the readout.
+2026) reads what it is disposed to make the model say **later**: words
+visible in the activations before any of them are emitted — violet cells in
+the grid are words that really arrive later in the answer. Type a word and
+it becomes a steering vector: nudge what the model is disposed to say, with
+the same panel as the readout.
 
 ```bash
 brainscope-jlens fit --model qwen3-4b --prompts wikitext --out lenses/qwen3-4b.pt
 brainscope --model qwen3-4b --jlens lenses/qwen3-4b.pt --traces traces/
 ```
 
-Fitting is the heavy part (minutes on a GPU — see
+Fit once per model (minutes on a GPU, reproducible:
 [examples/fit_jlens.sh](examples/fit_jlens.sh)); the readout is cheap and
-switchable live. There's also the **A-lens**, our experimental
-answer-targeted variant for reasoning models.
+switchable live.
 
-> **→ [docs/jlens.md](docs/jlens.md)** - the method, fitting, the health
-> checks, steering × J-lens, the A-lens, and the limitations.
+> **→ [docs/jlens.md](docs/jlens.md)** - method, fitting, health checks,
+> steering × J-lens, the experimental A-lens, limitations, licensing.
 
 ## Reasoning traces
 
-With `--traces DIR` every generation is persisted and replayable: scrub
-through the tokens with both lens columns per step, the `<think>` block
-segmented out, and an **answer-emergence chart** underneath — for the token
-that opens the final answer (or any word you click), its probability at
-every reasoning step under each lens. The J-lens curve rising while the
-text is still "thinking" is the global-workspace effect, live on your
-prompts. Persistence is light by default; exact curves need the heavy
-hidden-state switch, off until you flip it.
+With `--traces DIR` every generation is persisted and replayable token by
+token — the `<think>` block segmented out, both lens columns per step, and
+an **answer-emergence chart**: for the token that opens the final answer
+(or any word you click), its probability at every reasoning step, under
+each lens. When did it actually decide, and which lens saw it first?
 
 > **→ [docs/traces.md](docs/traces.md)** - replay, the emergence chart and
 > its honest limits, the API, and storage costs.
@@ -181,6 +174,12 @@ The best source of vectors is the sister repo
 pre-verified directions to load and use as-is, plus the pipeline to extract
 more and the references behind the method - often the better place to start
 than a blank `pairs.jsonl` (see [Auditing baked personas](#auditing-baked-personas)).
+
+Steering also goes agent-to-agent: the `/capture` endpoint reads one
+agent's residual-stream state so another can be steered by it — that
+experiment lives in [steeropathy](https://github.com/moudrkat/steeropathy)
+(agents steering agents), with brainscope as the window into what it does
+to the model.
 
 Extraction quality decides everything and over-steering quietly breaks the
 model, so before steering anything real read the full guide:
@@ -227,14 +226,16 @@ with the originals:
 - **Logit lens** - nostalgebraist, *interpreting GPT: the logit lens*
   (LessWrong, 2020); the cleaned-up successor is the tuned lens, Belrose
   et al. (arXiv:2303.08112).
-- **Jacobian lens / J-space** - Anthropic, *A global workspace in language
-  models* ([announcement](https://www.anthropic.com/research/global-workspace),
-  [paper](https://transformer-circuits.pub/2026/workspace/index.html), 2026);
+- **Jacobian lens / J-space** - Gurnee, Sofroniew et al. (Anthropic),
+  *Verbalizable Representations Form a Global Workspace in Language Models*
+  ([Transformer Circuits Thread, 2026](https://transformer-circuits.pub/2026/workspace/index.html);
+  announcement: [*A global workspace in language models*](https://www.anthropic.com/research/global-workspace));
   reference implementation
   [anthropics/jacobian-lens](https://github.com/anthropics/jacobian-lens)
   (Apache-2.0). brainscope's `jlens.py` is an independent reimplementation
-  from the paper; the A-lens ("answer lens") variant is a brainscope
-  experiment on top of their estimator, not part of the published work.
+  from the paper (full citation + BibTeX in [docs/jlens.md](docs/jlens.md#citing));
+  the A-lens ("answer lens") variant is a brainscope experiment on top of
+  their estimator, not part of the published work.
 - **Concept-before-language** - Wendler et al., *Do Llamas Work in English?*
   (arXiv:2402.10588).
 - **Activation steering** - Turner et al., Zou et al., Rimsky et al.; cited in

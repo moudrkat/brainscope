@@ -4,13 +4,16 @@ The logit lens asks every layer "what would come out if you stopped *now*".
 The **Jacobian lens** asks a better question: "what is this activation
 disposed to make the model say *later*?" — and the vocabulary patterns it
 picks out light up for words represented and pushed toward future output
-before — or without — being emitted. Anthropic introduced the technique and the term
-**J-space** in *A global workspace in language models*
-([announcement](https://www.anthropic.com/research/global-workspace) ·
-[paper](https://transformer-circuits.pub/2026/workspace/index.html), 2026);
+before — or without — being emitted. The technique and the term **J-space**
+were introduced by Gurnee, Sofroniew et al. (Anthropic) in *Verbalizable
+Representations Form a Global Workspace in Language Models*
+([paper](https://transformer-circuits.pub/2026/workspace/index.html),
+Transformer Circuits Thread, July 2026; announcement: [*A global workspace
+in language models*](https://www.anthropic.com/research/global-workspace));
 their [reference implementation](https://github.com/anthropics/jacobian-lens)
 is Apache-2.0. brainscope ships an **independent MIT reimplementation from
 the paper** (`brainscope/jlens.py`) — the published math, none of their code.
+Full citation [below](#citing).
 
 ← back to the [README](../README.md).
 
@@ -148,7 +151,8 @@ anything it shows.
 
 - The **method and the terms "Jacobian lens" / "J-space"** come from
   Anthropic's paper (linked above) — always cite it when writing about
-  results produced with this tool.
+  results produced with this tool. brainscope is an independent project,
+  **not affiliated with or endorsed by Anthropic**.
 - `brainscope/jlens.py` is an **independent reimplementation from the
   paper's description**, released under this repo's MIT license. **No code
   was copied** from Anthropic's Apache-2.0 reference implementation; we
@@ -162,6 +166,36 @@ anything it shows.
   publishing a fitted lens is fine — state the base model, its license, and
   the fit corpus (e.g. wikitext-103, CC BY-SA; the artifact contains
   aggregate Jacobian statistics, not the text) in the artifact card.
+
+## Citing
+
+If you use the J-lens (through brainscope or otherwise), cite the original
+work:
+
+> Gurnee, W.\*, Sofroniew, N.\*, Pearce, A., Piotrowski, M., Kauvar, I.,
+> Chen, R., Soligo, A., Bogdan, P., Ong, E., Wang, R., Thompson, T. B.,
+> Abrahams, D., Kantamneni, S., Ameisen, E., Batson, J., & Lindsey, J.\*
+> (2026). *Verbalizable Representations Form a Global Workspace in Language
+> Models.* Transformer Circuits Thread.
+> https://transformer-circuits.pub/2026/workspace/index.html
+
+```bibtex
+@article{gurnee2026workspace,
+  author  = {Gurnee, Wes and Sofroniew, Nicholas and Pearce, Adam and
+             Piotrowski, Mateusz and Kauvar, Isaac and Chen, Runjin and
+             Soligo, Anna and Bogdan, Paul and Ong, Euan and Wang, Rowan and
+             Thompson, T. Ben and Abrahams, David and Kantamneni, Subhash and
+             Ameisen, Emmanuel and Batson, Joshua and Lindsey, Jack},
+  title   = {Verbalizable Representations Form a Global Workspace in
+             Language Models},
+  journal = {Transformer Circuits Thread},
+  year    = {2026},
+  url     = {https://transformer-circuits.pub/2026/workspace/index.html}
+}
+```
+
+The A-lens variant is brainscope's own experiment — cite this repo for it,
+not the paper.
 
 ## Limitations (the paper's and ours)
 

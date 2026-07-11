@@ -1,10 +1,14 @@
 """Jacobian lens (J-lens) and answer lens (A-lens) for brainscope.
 
-Independent reimplementation of the Jacobian lens introduced by Anthropic in
-"A global workspace in language models" (2026):
+Independent reimplementation of the Jacobian lens introduced in:
+  Gurnee, Sofroniew, Pearce, Piotrowski, Kauvar, Chen, Soligo, Bogdan, Ong,
+  Wang, Thompson, Abrahams, Kantamneni, Ameisen, Batson & Lindsey (Anthropic),
+  "Verbalizable Representations Form a Global Workspace in Language Models",
+  Transformer Circuits Thread, July 2026.
   paper      https://transformer-circuits.pub/2026/workspace/index.html
   announce   https://www.anthropic.com/research/global-workspace
   reference  https://github.com/anthropics/jacobian-lens (Apache-2.0)
+  (full citation + BibTeX: docs/jlens.md#citing)
 No code is copied from the reference implementation; the method is
 re-derived from the paper's description so brainscope stays MIT and
 dependency-free.
