@@ -319,8 +319,9 @@
           The logit lens asks every layer "what would come out <i>now</i>" — this grid asks
           "what are you disposed to say <b>later</b>".
           <span style="color:#a99cff"><b>Violet cell = the word it shows really arrives later in the answer</b></span> ·
-          the violet line under each header sums up everything that moment saw coming
-          (including top-5 evidence — details in the tooltips) ·
+          a violet <b>left edge</b> = a later word hides in that cell's top-5 behind a
+          different top guess (hover for word, rank and probability) ·
+          the violet line under each header sums up everything that moment saw coming ·
           <span style="color:var(--live)">green</span> = the word being written right now ·
           faint cells = low probability, the lens's noise floor ·
           hover for top-5, click to pin ·
@@ -779,9 +780,14 @@ function paintFutureHits(piece) {
         cell._future = true;
         cell.style.background = `rgba(139,127,245,${(0.2 + Math.min(0.6, p * 0.8)).toFixed(3)})`;
         cell.style.color = p > 0.5 ? "#0d0a24" : "#cfc8ff";
+      } else if (rank > 0 && !cell._future) {
+        // a later word hides in this cell's top-5 behind a different top-1:
+        // a left-edge tick says "something here — hover", without painting
+        // the displayed word as a hit (that was misleading)
+        cell.style.boxShadow = "inset 3px 0 0 0 rgba(139,127,245,.9)";
       }
       cell._tip += `\n⇢ ${JSON.stringify(piece)} said ${dist} token(s) later` +
-                   (rank > 0 ? ` (rank ${rank + 1} in this cell)` : "");
+                   (rank > 0 ? ` (rank ${rank + 1} in this cell, p=${p})` : "");
       if (!best || p > best[0]) best = [p, n - i, rank + 1];
     }
     const colObj = cols[c];
