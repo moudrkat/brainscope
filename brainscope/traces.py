@@ -136,15 +136,19 @@ def answer_token(trace: dict, tokenizer=None, override: str | None = None) -> tu
     """(index into all_tokens, piece) of the token that opens the final
     answer: first non-whitespace token after </think> (or the first answer
     token when there is no think block). `override` picks a different piece
-    to track, matched anywhere after the think block."""
+    to track, matched anywhere after the think block; a comma-separated
+    override is a word FAMILY (\"calculator,calculate,calc\") — tracked as
+    the sum of its members' probabilities, anchored at whichever member is
+    emitted first (index -1 if none is: a family can be tracked even when
+    the model never says it)."""
     toks = trace.get("all_tokens") or []
     start = trace["think"][1] + 1 if trace.get("think") else 0
     if override:
-        want = override.strip()
+        wants = [w.strip() for w in override.split(",") if w.strip()]
         for i in range(start, len(toks)):
-            if want and toks[i].strip() == want:
-                return i, toks[i]
-        return None
+            if toks[i].strip() in wants:
+                return (i, toks[i]) if len(wants) == 1 else (i, override.strip())
+        return (-1, override.strip()) if len(wants) > 1 else None
     for i in range(start, len(toks)):
         if toks[i].strip():
             return i, toks[i]
@@ -161,10 +165,17 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
     if at is None:
         return {"error": "no answer token found"}
     a_idx, piece = at
-    ids = tokenizer(piece, add_special_tokens=False).input_ids
-    if not ids:
+    # a comma-separated piece is a word family: track the summed probability
+    # of every member's first token, with and without a leading space
+    family = [w.strip() for w in piece.split(",") if w.strip()]
+    a_ids = []
+    for w in family:
+        for v in (w, " " + w):
+            ids = tokenizer(v, add_special_tokens=False).input_ids
+            if ids and ids[0] not in a_ids:
+                a_ids.append(ids[0])
+    if not a_ids:
         return {"error": f"cannot tokenize {piece!r}"}
-    a_id = ids[0]
     off = trace.get("capture_offset", 1)
     n_steps = len(trace.get("tokens", []))
     series: dict[str, list] = {}
@@ -174,9 +185,8 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
         for step in readouts:
             best = 0.0
             for layer in step or []:
-                for e in layer:
-                    if e["t"] == piece and e["p"] > best:
-                        best = e["p"]
+                s = sum(e["p"] for e in layer if e["t"].strip() in family)
+                best = max(best, s)
             out.append(round(best, 4))
         return out
 
@@ -195,14 +205,14 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
             # norming it twice reorders the readout exactly at contested tokens
             z = torch.cat([norm(hs[s][:-1]), hs[s][-1:]])
             probs = torch.softmax(head(z).float(), dim=-1)   # [n_layers, vocab]
-            exact.append(round(float(probs[:, a_id].max()), 4))
+            exact.append(round(float(probs[:, a_ids].sum(-1).max()), 4))
         series["logit_lens"] = exact
         if jlens is not None:
             exact_j = []
             for s in range(hs.shape[0]):
                 z = jlens.transport(hs[s].float()).to(hs.dtype)
                 probs = torch.softmax(head(norm(z)).float(), dim=-1)
-                exact_j.append(round(float(probs[:, a_id].max()), 4))
+                exact_j.append(round(float(probs[:, a_ids].sum(-1).max()), 4))
             series["jlens"] = exact_j
 
     def first_over(xs, thr=0.1):

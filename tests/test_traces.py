@@ -80,3 +80,22 @@ def test_emergence_topk_and_exact(model, tok):
     out = tr.emergence(trace, hidden, tokenizer=tok, norm=norm, head=head)
     assert out["exact"] is True
     assert len(out["series"]["logit_lens"]) == 4
+
+
+def test_emergence_word_family(model, tok):
+    """Comma-separated override = word family: top-k mass sums the members
+    within a layer, and the family is trackable even when no member was
+    ever emitted (token_index -1)."""
+    lens_hist = [[[{"t": " calculator", "p": 0.2}, {"t": " calculate", "p": 0.15}]
+                  for _ in range(model.config.num_hidden_layers)]]
+    trace = {"all_tokens": [" The", " sum"], "capture_offset": 1,
+             "tokens": [" sum"], "lens": lens_hist}
+    norm, head = model.model.norm, model.get_output_embeddings()
+    out = tr.emergence(trace, None, tokenizer=tok, norm=norm, head=head,
+                       override="calculator,calculate,calc")
+    assert out["token"] == "calculator,calculate,calc"
+    assert out["token_index"] == -1
+    assert abs(out["series"]["logit_lens_topk"][0] - 0.35) < 1e-6
+    # single unmatched override still means "not found"
+    assert "error" in tr.emergence(trace, None, tokenizer=tok, norm=norm,
+                                   head=head, override="calculator")
