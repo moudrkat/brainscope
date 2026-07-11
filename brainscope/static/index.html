@@ -316,7 +316,8 @@
           not necessarily emitted ·
           compare with the logit lens: that one asks "what would come out <i>now</i>" ·
           <span style="color:#a99cff">violet</span> = the word really arrives later in the answer —
-          the readout saw it coming · <span style="color:var(--live)">green</span> = saying it right now ·
+          the readout saw it coming (filled = top-1, outlined = in the cell's top-5) ·
+          <span style="color:var(--live)">green</span> = saying it right now ·
           hover a cell for top-5, click to pin</div>
         <div id="jlensgrid" class="lensgrid"></div>
       </div>
@@ -702,7 +703,7 @@ function addLensColTo(grid, lens, emitted, tipVerb, track) {
   depth.textContent = emerge ? `L${emerge}` : "—";
   head.appendChild(depth);
   col.appendChild(head);
-  const colCells = [], colTexts = [], colProbs = [];
+  const colCells = [], colTops = [];
   for (let l = lens.length - 1; l >= 0; l--) {
     const cell = document.createElement("div"); cell.className = "lenscell";
     const top = lens[l][0];
@@ -717,11 +718,11 @@ function addLensColTo(grid, lens, emitted, tipVerb, track) {
     }
     cell._tip = lensTipText(lens[l], `layer ${l + 1} ${tipVerb || "would say"}:`);
     col.appendChild(cell);
-    colCells.push(cell); colTexts.push(top.t); colProbs.push(top.p);
+    colCells.push(cell); colTops.push(lens[l]);
   }
   if (track) {
     if (!grid._cols) grid._cols = [];
-    grid._cols.push({cells: colCells, texts: colTexts, probs: colProbs});
+    grid._cols.push({cells: colCells, tops: colTops});
   }
   // full answer stays scrollable; only follow the stream if the user is
   // already at the right edge (don't fight a hand that scrolled back)
@@ -733,22 +734,37 @@ const addLensCol = (lens, emitted) => addLensColTo(lensGrid, lens, emitted);
 
 // The J-lens grid's own signature: when a token is emitted, every EARLIER
 // column that already showed it lights up violet — the readout saw the word
-// coming before the logit lens could. This retro-paint is what makes the
-// panel visibly different from "layers over time": it reads ahead.
+// coming before the logit lens could. Full violet = it was the cell's top-1;
+// violet outline = it sat in the cell's top-5 (common on bigger models,
+// where the future signal is real but rarely rank 1 mid-stack). This
+// retro-paint is what makes the panel visibly different from "layers over
+// time": it reads ahead.
 function paintFutureHits(piece) {
   const cols = jlensGrid._cols;
   if (!cols || !piece || piece.trim() === "") return;
   const start = Math.max(0, cols.length - 80);
   for (let c = start; c < cols.length; c++) {
-    const {cells, texts, probs} = cols[c];
-    for (let i = 0; i < texts.length; i++) {
+    const {cells, tops} = cols[c];
+    for (let i = 0; i < tops.length; i++) {
       const cell = cells[i];
-      if (texts[i] !== piece || cell._green || cell._future) continue;
+      if (cell._green || cell._future) continue;
+      const rank = tops[i].findIndex(e => e.t === piece);
+      if (rank < 0) continue;
+      // outline hits (rank 2-5) only for substantive words — " is"/" of"
+      // recur constantly and would wash the panel in noise
+      if (rank > 0 && piece.trim().length < 3) continue;
       cell._future = true;
-      const a = 0.2 + Math.min(0.6, probs[i] * 0.8);
-      cell.style.background = `rgba(139,127,245,${a.toFixed(3)})`;
-      cell.style.color = probs[i] > 0.5 ? "#0d0a24" : "#cfc8ff";
-      cell._tip += `\n⇢ said ${cols.length - c} token(s) later`;
+      const p = tops[i][rank].p;
+      const dist = cols.length - c;
+      if (rank === 0) {
+        cell.style.background = `rgba(139,127,245,${(0.2 + Math.min(0.6, p * 0.8)).toFixed(3)})`;
+        cell.style.color = p > 0.5 ? "#0d0a24" : "#cfc8ff";
+      } else {
+        cell.style.boxShadow = "inset 0 0 0 1px rgba(139,127,245,.85)";
+        cell.style.color = "#cfc8ff";
+      }
+      cell._tip += `\n⇢ ${JSON.stringify(piece)} said ${dist} token(s) later` +
+                   (rank > 0 ? ` (rank ${rank + 1} here)` : "");
     }
   }
 }
@@ -1371,11 +1387,15 @@ trTextEl.addEventListener("click", (ev) => {
   if (piece && piece.trim()) fetchEmergence(piece.trim());
 });
 
+let emergeSeq = 0;   // last request wins — a slow earlier fetch must not
+                     // overwrite the curve for the word clicked later
 async function fetchEmergence(token) {
   if (!trCurrent) return;
+  const seq = ++emergeSeq;
   const q = token ? `?token=${encodeURIComponent(token)}` : "";
   const r = await fetch(`/traces/${trCurrent.id}/emergence${q}`)
     .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (seq !== emergeSeq) return;
   trEmergence = r;
   drawEmergence();
 }

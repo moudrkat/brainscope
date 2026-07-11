@@ -140,6 +140,12 @@ Fit once per model (minutes on a GPU, reproducible:
 [examples/fit_jlens.sh](examples/fit_jlens.sh)); the readout is cheap and
 switchable live.
 
+![J-lens: while writing "The capital of France is…", violet cells across earlier columns show France, is, Paris — words that really arrive later in the answer](docs/img/jlens-reads-ahead.png)
+
+*Qwen3-4B writing "The capital of France is Paris." — violet cells are words
+the J-lens read out before they were emitted; the rest of the sentence exists
+in the activations while the model is still on the word "capital".*
+
 > **→ [docs/jlens.md](docs/jlens.md)** - method, fitting, health checks,
 > steering × J-lens, the experimental A-lens, limitations, licensing.
 
@@ -150,6 +156,12 @@ token — the `<think>` block segmented out, both lens columns per step, and
 an **answer-emergence chart**: for the token that opens the final answer
 (or any word you click), its probability at every reasoning step, under
 each lens. When did it actually decide, and which lens saw it first?
+
+![Trace replay with the answer-emergence chart: the green J-lens curve rises before the amber logit-lens curve](docs/img/answer-emergence.png)
+
+*Replaying a trace, tracking " Paris": the green J-lens curve rises steps
+before the amber logit lens does — the readout holds the word before the
+model says it.*
 
 > **→ [docs/traces.md](docs/traces.md)** - replay, the emergence chart and
 > its honest limits, the API, and storage costs.

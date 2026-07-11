@@ -183,8 +183,9 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
         series["jlens_topk"] = topk_series(trace["jlens"])
 
     if hidden is not None and norm is not None and head is not None:
-        dtype = next(head.parameters()).dtype
-        hs = hidden.to(dtype)                       # [steps, n_layers, d]
+        head_param = next(head.parameters())
+        # stored hidden states are CPU fp16; the model may live on cuda
+        hs = hidden.to(device=head_param.device, dtype=head_param.dtype)
         exact = []
         for s in range(hs.shape[0]):
             probs = torch.softmax(head(norm(hs[s])).float(), dim=-1)   # [n_layers, vocab]
@@ -193,7 +194,7 @@ def emergence(trace: dict, hidden: torch.Tensor | None, *, tokenizer, norm, head
         if jlens is not None:
             exact_j = []
             for s in range(hs.shape[0]):
-                z = jlens.transport(hs[s].float()).to(dtype)
+                z = jlens.transport(hs[s].float()).to(hs.dtype)
                 probs = torch.softmax(head(norm(z)).float(), dim=-1)
                 exact_j.append(round(float(probs[:, a_id].max()), 4))
             series["jlens"] = exact_j
