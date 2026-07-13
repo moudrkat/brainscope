@@ -89,15 +89,22 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 
 Left: the model itself - the prompt enters at the bottom, one **clickable row
 per decoder layer**, the next word exits at the top (lm_head). On the right,
-four instruments:
+the instruments:
 
 - **activity over time** - one column per generated token, one row per
   layer, color = how loudly that layer works relative to its own average.
+- **neurons** (click any cell of the heatmap) - the number un-collapsed:
+  every residual channel behind that (token, layer) cell as a bipolar bar
+  strip, with per-generation z-scores flagging the channels that are unusual
+  *now* rather than just always loud. Hover a bar for channel, value and z;
+  "follow live" tracks the newest token while generating.
 - **attention** - for the clicked layer: what each answer token looks back
   at; **heads** splits the newest token per attention head.
 - **logit lens** (click lm_head) - every layer's next-token readout: watch
   the answer crystallize with depth. Hover a cell for the top-5 candidates,
-  click to pin the tooltip.
+  click to pin the tooltip. With `--tlens` it reads through a **tuned lens**
+  (Belrose et al. 2023, trained per-layer corrections), which removes the
+  raw lens's mid-stack noise — same grid, honest depths.
 - **J-lens** (with `--jlens`) - the same grid, but reading what each layer
   is disposed to make the model say *later* - words visible before they are
   emitted, see [below](#j-lens-reading-ahead-of-the-output).
@@ -121,6 +128,28 @@ decode the meaning - in English and Chinese - while the Czech surface form
 assembles only in the last few layers: the geometry of multilingual
 representations, studied properly in Wendler et al. 2024 (arXiv:2402.10588).
 Readouts are a raw logit lens, so mid-stack tokens are approximate.*
+
+## Tuned lens (trusting the middle of the stack)
+
+The raw logit lens reads every layer through the final head, which the model
+never trained the middle layers for — mid-stack readouts are suggestive, not
+reliable. A **tuned lens** (Belrose et al. 2023, arXiv:2303.08112) fixes
+that with one trained affine correction per layer. Fit one with the
+[`tuned-lens`](https://github.com/AlignmentResearch/tuned-lens) package
+(hours, once per model), then point brainscope at it:
+
+```bash
+pip install tuned-lens
+python -m tuned_lens train --model.name Qwen/Qwen3-4B-Instruct-2507 \
+    --data.name wikitext --data.config_name wikitext-103-raw-v1 \
+    --output lenses/qwen3-4b-tuned
+brainscope --model qwen3-4b --tlens lenses/qwen3-4b-tuned/params.pt
+```
+
+The lens tab relabels itself "tuned lens" and everything downstream — the
+per-word settle depths in the answer text, the recorded trace readouts —
+reads through the translators. One extra `hidden × hidden` matmul per layer
+per token.
 
 ## J-lens (reading ahead of the output)
 

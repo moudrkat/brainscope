@@ -1072,7 +1072,8 @@ connect();
 fetch("/info").then(r => r.json()).then(i => {
   document.getElementById("modelinfo").innerHTML =
     `<b>${i.model}</b> · ${i.params_b} B params · ${i.n_layers} layers · ${i.n_heads} heads · hidden ${i.hidden_size} · vocab ${(i.vocab_size/1000).toFixed(0)}k` +
-    (i.lens ? " · lens on" : " · lens off");
+    (i.tlens ? " · tuned lens on" : i.lens ? " · lens on" : " · lens off");
+  if (i.tlens) document.querySelector('.tab[data-p="lens"]').textContent = "tuned lens";
   nLayersTotal = i.n_layers || 36;
   lensOn = !!i.lens;
   vizOn = i.viz !== false; paintViz();

@@ -56,6 +56,9 @@ state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {
                "loop": None, "device": "cpu", "model_name": "",
                "steer": None, "steer_handles": [], "policy": [], "policy_on": True,
                "gen": None, "probes": {"attn": {}, "mlp": {}}, "lens": False,
+               # tuned lens (Belrose et al. 2023) — per-layer translators loaded
+               # via --tlens; when present the logit lens reads through them
+               "tlens": None,
                "viz": True,
                # J-lens (Jacobian lens) — see jlens.py; loaded via --jlens,
                # per-token readout toggleable live (POST /jlens)
@@ -292,10 +295,31 @@ def _topk_readout(z: torch.Tensor, top: int = 5, last_normed: bool = False):
              for k in range(top)] for layer in range(z.shape[0])]
 
 
+def _tuned_transport(hs: torch.Tensor) -> torch.Tensor:
+    """Apply tuned-lens translators (Belrose et al. 2023): row j of the stack
+    is the output of decoder layer j+1, fitted translator j+1 maps it into
+    final-layer space (h + W h + b, residual convention). The last row is
+    already the final layer and passes through untouched."""
+    tl = state["tlens"]
+    rows = []
+    for j in range(hs.shape[0]):
+        wb = None if j == hs.shape[0] - 1 else tl.get(j + 1)
+        if wb is None:
+            rows.append(hs[j])
+        else:
+            h = hs[j].to(wb[0].dtype)
+            rows.append(h + h @ wb[0].T + wb[1])
+    return torch.stack(rows)
+
+
 def _logit_lens(hs: torch.Tensor, top: int = 5):
     """What the model would say if it stopped at each layer: every layer's
-    hidden state pushed through the final norm + lm_head. Watching the answer
-    crystallize with depth is the point of the exercise."""
+    hidden state pushed through the final norm + lm_head — with --tlens, each
+    layer is first mapped by its tuned-lens translator, which removes the
+    raw lens's mid-stack basis mismatch. Watching the answer crystallize
+    with depth is the point of the exercise."""
+    if state.get("tlens"):
+        hs = _tuned_transport(hs)
     return _topk_readout(hs, top, last_normed=True)
 
 
@@ -696,6 +720,7 @@ async def info():
             "intermediate_size": getattr(cfg, "intermediate_size", None),
             "vocab_size": getattr(cfg, "vocab_size", None),
             "lens": state["lens"],
+            "tlens": state.get("tlens") is not None,
             "viz": state["viz"],
             "jlens": {"loaded": state["jlens"] is not None, "on": state["jlens_on"],
                       "mode": (state["jlens"].meta.get("mode") if state["jlens"] else None)},
@@ -1251,6 +1276,10 @@ def main() -> None:
     parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
                         help="logit lens (per-layer next-token readout); auto = on for CUDA, "
                              "off for CPU (one lm_head matmul per layer per token)")
+    parser.add_argument("--tlens", type=Path, default=None,
+                        help="tuned-lens artifact (params.pt, Belrose et al. 2023 — "
+                             "pip install tuned-lens; python -m tuned_lens train …) for the "
+                             "served model; upgrades the live logit lens to the tuned lens")
     parser.add_argument("--jlens", type=Path, default=None,
                         help="fitted Jacobian-lens artifact (python -m brainscope.jlens fit …) "
                              "— per-token J-space readout, toggleable live via POST /jlens")
@@ -1299,6 +1328,25 @@ def main() -> None:
             else:                        # legacy format: bare list of rules
                 state["policy"] = raw
     state["lens"] = args.lens == "on" or (args.lens == "auto" and state["device"] == "cuda")
+    if args.tlens:
+        sd = torch.load(args.tlens, map_location="cpu")
+        hidden = _hidden_size()
+        dtype = torch.bfloat16 if state["device"] == "cuda" else torch.float32
+        tl = {int(k.split(".")[0]): None for k in sd if k.endswith(".weight")}
+        for i in tl:
+            w = sd[f"{i}.weight"]
+            if w.shape != (hidden, hidden):
+                raise SystemExit(f"brainscope: tuned lens {args.tlens} translator {i} is "
+                                 f"{tuple(w.shape)}, model hidden size is {hidden}")
+            tl[i] = (w.to(state["device"], dtype), sd[f"{i}.bias"].to(state["device"], dtype))
+        n_layers = len(_decoder_layers(state["model"]))
+        if max(tl) < n_layers - 1:
+            raise SystemExit(f"brainscope: tuned lens has translators up to {max(tl)}, "
+                             f"model has {n_layers} layers")
+        state["tlens"] = tl
+        state["lens"] = True   # a tuned lens without the lens readout is pointless
+        print(f"brainscope: tuned lens loaded ({len(tl)} translators) — "
+              "the live logit lens now reads through it", flush=True)
     if args.jlens:
         jl = JacobianLens.load(args.jlens, device=state["device"])
         n_layers, hidden = len(_decoder_layers(state["model"])), _hidden_size()
