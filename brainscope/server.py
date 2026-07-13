@@ -184,39 +184,71 @@ def apply_bake(path: Path) -> None:
           flush=True)
 
 
-def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int) -> list:
-    """Register activation-addition hooks (h += strength * direction), return handles.
+def _dir_row(name: str, i: int) -> torch.Tensor:
+    vec = state["directions"][name]
+    return vec[min(i, vec.shape[0] - 1)] if vec.dim() == 2 else vec
+
+
+def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int,
+                         swap_to: str | None = None) -> list:
+    """Register steering hooks, return handles.
+
+    Default: activation addition (h += strength * direction). With `swap_to`,
+    a LENS-COORDINATE SWAP instead (Gurnee et al. 2026): the activation's
+    coefficient along direction `name` is removed and re-emitted along
+    `swap_to` — h' = h − (h·â)â + strength·(h·â)b̂ — exchanging one concept
+    for another instead of blindly adding energy.
 
     A direction is either one vector [hidden] applied to every steered layer,
     or a per-layer matrix [n_layers, hidden] (e.g. a hidden-directions dict
     entry) where each steered layer gets its own row."""
-    vec = state["directions"][name]
 
-    def make_hook(row):
+    def make_hook(row, row_to=None):
+        a = torch.nn.functional.normalize(row.float(), dim=0)
+        b = None if row_to is None else torch.nn.functional.normalize(row_to.float(), dim=0)
+
         def hook(_module, _inp, out):
             if state.get("steer_mute"):   # inside a tool call: syntax over persona
                 return out
             hidden = out[0] if isinstance(out, tuple) else out
-            hidden = hidden + strength * row.to(hidden.dtype)
+            if b is None:
+                hidden = hidden + strength * row.to(hidden.dtype)
+            else:
+                h = hidden.float()
+                coef = h @ a                                    # [batch, seq]
+                h = h - coef.unsqueeze(-1) * a + strength * coef.unsqueeze(-1) * b
+                hidden = h.to(hidden.dtype)
             return (hidden, *out[1:]) if isinstance(out, tuple) else hidden
         return hook
 
     layers = _decoder_layers(state["model"])
     layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
     return [layers[i].register_forward_hook(
-                make_hook(vec[min(i, vec.shape[0] - 1)] if vec.dim() == 2 else vec))
+                make_hook(_dir_row(name, i),
+                          _dir_row(swap_to, i) if swap_to else None))
             for i in range(max(0, layer_from), layer_to + 1)]
 
 
 def _normalize_steer(body) -> list:
     """One steering spec, {"stack": [specs]}, or a bare list — always returns
     a list of effective specs (unknown names and zero strengths drop out).
-    Stacks compose like the bake recipes: e.g. pref @ 1.5 with refusal @ -1."""
+    Stacks compose like the bake recipes: e.g. pref @ 1.5 with refusal @ -1.
+
+    A spec with {"from": A, "to": B} is a lens-coordinate swap (A's
+    coefficient re-emitted along B; strength scales the re-emission,
+    default 1)."""
     if not body:
         return []
     specs = body.get("stack", [body]) if isinstance(body, dict) else body
     out = []
     for s in specs if isinstance(specs, list) else []:
+        frm, to = s.get("from"), s.get("to")
+        if frm and to and frm in state["directions"] and to in state["directions"]:
+            out.append({"name": frm, "swap_to": to,
+                        "strength": float(s.get("strength") or 1.0),
+                        "layer_from": int(s.get("layer_from", 0)),
+                        "layer_to": int(s.get("layer_to", -1))})
+            continue
         name, strength = s.get("name"), float(s.get("strength") or 0)
         if name and strength != 0 and name in state["directions"]:
             out.append({"name": name, "strength": strength,
@@ -231,9 +263,12 @@ def _install_steer_stack(specs: list) -> tuple[list, list]:
     handles, applied = [], []
     for s in specs:
         handles += _install_steer_hooks(s["name"], s["strength"],
-                                        s["layer_from"], s["layer_to"])
+                                        s["layer_from"], s["layer_to"],
+                                        s.get("swap_to"))
         lt = min(s["layer_to"] if s["layer_to"] >= 0 else n - 1, n - 1)
-        applied.append({"name": s["name"], "strength": s["strength"],
+        name = f"{s['name']}→{s['swap_to']}" if s.get("swap_to") else s["name"]
+        applied.append({"name": name, "from": s["name"], "swap_to": s.get("swap_to"),
+                        "strength": s["strength"],
                         "layers": [max(0, s["layer_from"]), lt]})
     return handles, applied
 
@@ -422,7 +457,8 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 h.remove()
             if steering is not None and state["steer"]:
                 state["steer_handles"], state["steer"] = _install_steer_stack(
-                    [{"name": s["name"], "strength": s["strength"],
+                    [{"name": s.get("from", s["name"]), "swap_to": s.get("swap_to"),
+                      "strength": s["strength"],
                       "layer_from": s["layers"][0], "layer_to": s["layers"][1]}
                      for s in state["steer"]])
             gc.collect()
