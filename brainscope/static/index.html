@@ -30,10 +30,15 @@
   .rbtn { background:var(--panel2); color:var(--faint); border:1px solid var(--line);
           font:600 10px var(--mono); padding:3px 8px; border-radius:3px; cursor:pointer; }
   .rbtn.on { color:var(--accent); border-color:var(--accent); }
-  #attntop { margin-top:7px; font-size:11px; color:var(--muted); line-height:1.9; }
-  #attntop span { background:var(--panel2); border:1px solid var(--line); border-radius:3px;
+  #attntop, #neurontop { margin-top:7px; font-size:11px; color:var(--muted); line-height:1.9; }
+  #attntop span, #neurontop span { background:var(--panel2); border:1px solid var(--line); border-radius:3px;
                   padding:1px 6px; margin-right:4px; white-space:pre; }
-  #attntop i { color:var(--accent); font-style:normal; }
+  #attntop i, #neurontop i { color:var(--accent); font-style:normal; }
+  #neurontop span.hot { border-color:#e5636b; }
+  #neurontop span { cursor:pointer; }
+  #neurontop span:hover { border-color:var(--line2); color:var(--ink); }
+  #neuroncanvas { cursor:crosshair; }
+  #heat { cursor:pointer; }
   #status { display:flex; align-items:center; gap:8px; color:var(--faint); font-size:12px; }
   #dot { width:8px; height:8px; border-radius:50%; background:var(--faint); }
   #dot.live { background:var(--live); animation:pulse 1.1s ease-in-out infinite; }
@@ -272,6 +277,7 @@
     <div id="detail">
       <div id="dtabs">
         <button class="tab on" data-p="act">activity over time</button>
+        <button class="tab" data-p="neurons" id="tab-neurons">neurons</button>
         <button class="tab" data-p="attn" id="tab-attn">attention</button>
         <button class="tab" data-p="heads" id="tab-heads">heads</button>
         <button class="tab" data-p="matrix" id="tab-matrix">matrix</button>
@@ -283,8 +289,24 @@
       <div class="panel on" id="p-act">
         <canvas id="heat" class="pcanvas"></canvas>
         <div class="pcap">each column = one answer token, time runs right → · rows = layers, same order as the
-          architecture · debugging: a suddenly brighter band of columns = the model straining, often right
+          architecture · <b>click any cell to open its neurons</b> — the full channel vector behind that number ·
+          debugging: a suddenly brighter band of columns = the model straining, often right
           before the answer derails</div>
+      </div>
+      <div class="panel" id="p-neurons">
+        <div class="pctl" style="display:flex;align-items:center;margin-bottom:6px">
+          <span class="pinfo" id="neuroninfo" style="margin:0">click a cell in “activity over time” — every residual channel behind it</span>
+          <span style="margin-left:auto">
+            <button class="rbtn on" id="nfollow" title="while generating, keep showing the newest token at this layer">follow live</button>
+          </span>
+        </div>
+        <canvas id="neuroncanvas" class="pcanvas" style="height:320px"></canvas>
+        <div id="neurontop"></div>
+        <div class="pcap">each bar = one residual channel of the clicked (token, layer) cell — together they ARE the
+          norm the heatmap shows · <span style="color:var(--accent)">amber up</span> = positive,
+          <span style="color:#3987e5">blue down</span> = negative ·
+          <span style="color:#e5636b">red dot</span> = channel far from its own average this generation (|z| ≥ 3) —
+          the interesting ones · hover a bar for channel, value and z · click to pin</div>
       </div>
       <div class="panel" id="p-attn">
         <div class="pctl">
@@ -502,6 +524,7 @@ document.querySelectorAll(".tab").forEach(b => b.onclick = () => switchTab(b.dat
 
 function refreshActivePanel() {
   if (activeTab === "act") draw();
+  else if (activeTab === "neurons") refreshNeurons();
   else if (activeTab === "attn") refreshAttn();
   else if (activeTab === "heads") refreshHeads();
   else if (activeTab === "matrix") refreshMatrix();
@@ -519,6 +542,140 @@ function b64u8(s) {
   for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i);
   return a;
 }
+
+// ---------- neurons: the channel vector behind ONE heatmap cell ----------
+// The heatmap collapses each (token, layer) to a single L2 norm; this panel
+// is that number un-collapsed — every residual channel, drawn bipolar, with
+// per-generation z-scores so the channels that are unusual NOW stand out.
+const neuronCanvas = document.getElementById("neuroncanvas");
+const neuronTopEl = document.getElementById("neurontop");
+let neuronData = null;      // last /gen/neurons payload
+let neuronFollow = true;    // while generating: keep jumping to the newest step
+let neuronMark = null;      // pinned channel index (click on a bar)
+document.getElementById("nfollow").onclick = () => {
+  neuronFollow = !neuronFollow;
+  document.getElementById("nfollow").classList.toggle("on", neuronFollow);
+};
+
+async function openNeurons(step, layer, switchTo) {
+  const r = await fetch(`/gen/neurons?step=${step}&layer=${layer}`)
+    .then(r => r.ok ? r.json() : null).catch(() => null);
+  if (!r) return;
+  neuronData = r; neuronMark = null;
+  document.getElementById("tab-neurons").textContent =
+    `neurons · L${layer + 1} @ t${step + 1}`;
+  if (switchTo && activeTab !== "neurons") switchTab("neurons");
+  else drawNeurons();
+}
+
+function refreshNeurons() {
+  // live follow: during generation track the newest captured step
+  if (generating && neuronFollow && neuronData) {
+    openNeurons(-1, neuronData.layer, false);
+    return;
+  }
+  drawNeurons();
+}
+
+function neuronZ(d) {
+  return d.values.map((v, i) => (v - d.mean[i]) / (d.std[i] || 1));
+}
+
+function drawNeurons() {
+  const W = neuronCanvas.width = neuronCanvas.clientWidth * devicePixelRatio;
+  const H = neuronCanvas.height = neuronCanvas.clientHeight * devicePixelRatio;
+  const nctx = neuronCanvas.getContext("2d");
+  nctx.clearRect(0, 0, W, H);
+  const d = neuronData;
+  nctx.font = `${10 * devicePixelRatio}px ${getComputedStyle(document.body).fontFamily}`;
+  if (!d) {
+    nctx.fillStyle = "#5c6b80";
+    nctx.fillText("click any cell of the “activity over time” heatmap to open it here", 10, H / 2);
+    return;
+  }
+  document.getElementById("neuroninfo").textContent =
+    `token ${d.step + 1}${d.token ? " " + JSON.stringify(d.token) : ""} · layer ${d.layer + 1} · ` +
+    `${d.hidden} channels · ‖h‖ ${d.norm}`;
+  const padT = 12 * devicePixelRatio, padB = 4 * devicePixelRatio;
+  const mid = padT + (H - padT - padB) / 2;
+  const half = (H - padT - padB) / 2;
+  const n = d.values.length;
+  let vmax = 1e-6;
+  for (const v of d.values) if (Math.abs(v) > vmax) vmax = Math.abs(v);
+  const z = neuronZ(d);
+  const bw = W / n;
+  // zero line
+  nctx.strokeStyle = "rgba(43,61,92,.9)";
+  nctx.beginPath(); nctx.moveTo(0, mid); nctx.lineTo(W, mid); nctx.stroke();
+  for (let i = 0; i < n; i++) {
+    const v = d.values[i];
+    const h = Math.max(1, Math.abs(v) / vmax * half);
+    // loudness also drives alpha — the quiet mass recedes, the spikes glow
+    const a = 0.25 + 0.75 * Math.min(1, Math.abs(v) / vmax);
+    nctx.fillStyle = v >= 0 ? `rgba(232,180,90,${a.toFixed(3)})` : `rgba(57,135,229,${a.toFixed(3)})`;
+    nctx.fillRect(i * bw, v >= 0 ? mid - h : mid, Math.max(bw, devicePixelRatio * 0.8), h);
+    if (Math.abs(z[i]) >= 3) {          // unusual for THIS generation — flag it
+      nctx.fillStyle = "#e5636b";
+      const y = v >= 0 ? mid - h - 4 * devicePixelRatio : mid + h + 4 * devicePixelRatio;
+      nctx.beginPath(); nctx.arc(i * bw + bw / 2, y, 1.6 * devicePixelRatio, 0, 7); nctx.fill();
+    }
+  }
+  if (neuronMark != null) {             // pinned channel: a thin marker line
+    nctx.strokeStyle = "rgba(233,238,245,.8)";
+    nctx.beginPath(); nctx.moveTo(neuronMark * bw + bw / 2, padT);
+    nctx.lineTo(neuronMark * bw + bw / 2, H - padB); nctx.stroke();
+  }
+  nctx.fillStyle = "#5c6b80";
+  nctx.fillText(`±${vmax.toFixed(1)}`, 4 * devicePixelRatio, 9 * devicePixelRatio);
+  drawNeuronTop();
+}
+
+function drawNeuronTop() {
+  const d = neuronData;
+  if (!d) { neuronTopEl.textContent = ""; return; }
+  const z = neuronZ(d);
+  const idx = [...d.values.keys()]
+    .sort((a, b) => Math.abs(z[b]) - Math.abs(z[a])).slice(0, 10);
+  neuronTopEl.innerHTML = "loudest right now → " + idx.map(i =>
+    `<span class="${Math.abs(z[i]) >= 3 ? "hot" : ""}" data-ch="${i}"` +
+    ` title="channel ${i} · value ${d.values[i]} · mean ${d.mean[i]} ± ${d.std[i]} this generation">` +
+    `#${i} <i>${d.values[i].toFixed(1)}</i> z ${z[i].toFixed(1)}</span>`).join(" ");
+  neuronTopEl.querySelectorAll("span[data-ch]").forEach(sp => sp.onclick = () => {
+    neuronMark = +sp.dataset.ch; drawNeurons();
+  });
+}
+
+neuronCanvas.addEventListener("mousemove", (ev) => {
+  if (tipPinned || !neuronData) { if (!tipPinned) tip.style.display = "none"; return; }
+  const rect = neuronCanvas.getBoundingClientRect();
+  const d = neuronData;
+  const i = Math.floor((ev.clientX - rect.left) / rect.width * d.values.length);
+  if (i < 0 || i >= d.values.length) { tip.style.display = "none"; return; }
+  const z = (d.values[i] - d.mean[i]) / (d.std[i] || 1);
+  showTip(ev, `channel ${i}\nvalue ${d.values[i]}\nmean ${d.mean[i]} ± ${d.std[i]} (this gen)\nz ${z.toFixed(2)}`);
+});
+neuronCanvas.addEventListener("mouseleave", () => { if (!tipPinned) tip.style.display = "none"; });
+neuronCanvas.addEventListener("click", (ev) => {
+  if (!neuronData) return;
+  const rect = neuronCanvas.getBoundingClientRect();
+  const i = Math.floor((ev.clientX - rect.left) / rect.width * neuronData.values.length);
+  neuronMark = (i === neuronMark) ? null : i;
+  drawNeurons();
+});
+
+// click a heatmap cell → open its neurons (same geometry as the hover tip)
+canvas.addEventListener("click", (ev) => {
+  if (!cols.length) return;
+  const rect = canvas.getBoundingClientRect();
+  const W = canvas.width, H = canvas.height;
+  const nLayers = cols[0].length;
+  const cw = Math.max(2, Math.min(14, W / Math.max(60, cols.length)));
+  const start = Math.max(0, cols.length - Math.floor(W / cw));
+  const x = start + Math.floor((ev.clientX - rect.left) * devicePixelRatio / cw);
+  const l = nLayers - 1 - Math.floor((ev.clientY - rect.top) * devicePixelRatio / (H / nLayers));
+  if (x < 0 || x >= cols.length || l < 0 || l >= nLayers) return;
+  openNeurons(x, l, true);
+});
 
 // ---------- attention map (mean over heads, whole generation, one layer) ----------
 const attnCanvas = document.getElementById("attncanvas");

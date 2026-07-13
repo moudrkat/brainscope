@@ -571,7 +571,10 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             payload["attn_norm"] = [round(probes["attn"].get(i, 0.0), 2) for i in range(n_layers)]
             payload["mlp_norm"] = [round(probes["mlp"].get(i, 0.0), 2) for i in range(n_layers)]
             hs = _stack_last(out.hidden_states)
-            if save_hidden and len(gen["hidden"]) < HIDDEN_MAX_STEPS:
+            # full per-layer residuals stay in memory for the live neuron
+            # drilldown (fp16, one generation's worth); writing them to the
+            # trace stays behind the hidden: on toggle
+            if len(gen["hidden"]) < HIDDEN_MAX_STEPS:
                 gen["hidden"].append(hs.to(torch.float16).cpu())
             if state["lens"]:
                 lens = _logit_lens(hs)
@@ -599,7 +602,8 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     trace_id = None
     if state["traces"] and state["save_traces"]:
         try:
-            state["traces"].save(gen, state["model_name"], gen["hidden"] or None)
+            state["traces"].save(gen, state["model_name"],
+                                 (gen["hidden"] or None) if save_hidden else None)
             trace_id = gen["id"]
         except Exception as e:   # persistence must never break generation
             print(f"brainscope: trace save failed — {e}", flush=True)
@@ -765,6 +769,38 @@ async def gen_matrix(layer: int = 0):
     return {"id": g["id"], "layer": layer, "layers": len(g["matrix"]),
             "heads": int(heads), "seq": int(seq),
             "tokens": g["prompt_tokens"], "data": base64.b64encode(m.tobytes()).decode()}
+
+
+@app.get("/gen/neurons")
+async def gen_neurons(step: int = -1, layer: int = 0):
+    """Per-channel residual activations behind ONE heatmap cell: the full
+    [hidden] vector of `layer`'s output at captured answer step `step`
+    (default latest), plus that channel's mean/std across the generation so
+    far — so the viz can show which channels are unusual NOW, not just big
+    always. This is the decomposition of the L2 norm the cell displays."""
+    g = state["gen"]
+    if not g or not g["hidden"]:
+        return JSONResponse({"error": "no hidden states captured yet — is capture on?"},
+                            status_code=404)
+    if step < 0:
+        step = len(g["hidden"]) - 1
+    if not 0 <= step < len(g["hidden"]):
+        return JSONResponse({"error": "step out of range (or beyond the hidden-state cap)"},
+                            status_code=400)
+    stack = g["hidden"][step]                     # [n_layers, hidden] fp16 cpu
+    if not 0 <= layer < stack.shape[0]:
+        return JSONResponse({"error": "layer out of range"}, status_code=400)
+    v = stack[layer].float()
+    all_l = torch.stack([h[layer] for h in g["hidden"]]).float()
+    mean = all_l.mean(0)
+    std = all_l.std(0, unbiased=False)            # unbiased would NaN at 1 step
+    return {"id": g["id"], "step": step, "layer": layer,
+            "token": g["tokens"][step] if step < len(g["tokens"]) else None,
+            "n_steps": len(g["hidden"]), "hidden": int(v.shape[0]),
+            "norm": round(float(v.norm()), 2),
+            "values": [round(float(x), 4) for x in v],
+            "mean": [round(float(x), 4) for x in mean],
+            "std": [round(float(x), 4) for x in std]}
 
 
 @app.post("/viz")
