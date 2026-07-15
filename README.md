@@ -4,6 +4,11 @@
 
 **Watch your model think while your app talks to it.**
 
+> **See it in 30 seconds, on your laptop, no GPU:** `pip install -e .` then
+> `brainscope --model tiny` (a 0.5B model on CPU). Open the page, type in the
+> built-in chat box, and watch each word surface through the layers *before* the
+> model writes it. No app to wire up, no card required. ([full quickstart ↓](#quickstart))
+
 An OpenAI-compatible chat server over any Hugging Face causal LM with a live
 view into the residual stream. Three things it does:
 
