@@ -10,7 +10,7 @@
 > model writes it. No app to wire up, no card required. ([full quickstart ↓](#quickstart))
 
 An OpenAI-compatible chat server over any Hugging Face causal LM with a live
-view into the residual stream. Three things it does:
+view into the residual stream. What it does:
 
 - **Point your own app at it and watch real traffic** — no code changes:
   aim your OpenAI `base_url` at brainscope and every generation your app makes
@@ -26,12 +26,9 @@ view into the residual stream. Three things it does:
 - **Inspect reasoning traces** — every generation can be persisted, replayed
   token by token, and analyzed: when did the answer emerge inside the
   `<think>` block, and which lens saw it first?
-- **Audit baked personas** — a 9 KB weights patch can turn a model into a
-  covert advocate
-  ([hidden-directions](https://github.com/moudrkat/hidden-directions), the
-  sister project). Serve the patched model here with the persona catalogue
-  loaded and the per-layer cosines expose it, token by token — no runtime
-  steering involved.
+- **Audit baked personas** — serve a model that carries a baked-in covert
+  advocate and the per-layer cosines expose it, token by token
+  ([details ↓](#auditing-baked-personas)).
 
 ```mermaid
 flowchart LR
@@ -270,6 +267,19 @@ moment they're produced; `transformers` exposes them for every architecture
 with one flag. That's the trade: brainscope is slower, but it sees
 everything. It's a lab instrument for development - run it next to
 production, not instead of it.
+
+## The stack
+
+brainscope is the middle of a three-repo stack; each piece also runs alone:
+
+- **[hidden-directions](https://github.com/moudrkat/hidden-directions)** —
+  the direction catalogue: extract, bake, and audit steering directions,
+  per model. Where the vectors come from.
+- **brainscope** *(you are here)* — the instrument: hosts the model,
+  captures activations, steers at runtime, reads the J-lens, keeps traces.
+- **[steeropathy](https://github.com/moudrkat/steeropathy)** — the lab on
+  top: agents that communicate through activations and J-space instead of
+  text, brainscope as their only channel.
 
 ## Standing on shoulders
 
