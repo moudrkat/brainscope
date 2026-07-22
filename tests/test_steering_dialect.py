@@ -280,3 +280,29 @@ def test_forced_replay_head_attribution(client, direction):
     assert h["layer"] == 2
     assert len(h["clean_mean"]) == len(h["steered_mean"]) == 4  # tiny model heads
     assert h["clean_mean"] != h["steered_mean"]
+
+
+def test_patching_zero_strength_flips_nothing(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 1e-9},
+        "forced": True, "max_tokens": 6, "patch_layer": 1})
+    assert r.status_code == 200, r.text
+    res = r.json()["patching"]
+    assert res["layer"] == 1
+    assert all(e["n_flips"] == 0 for e in res["results"]), \
+        "patching a ~zero-steer residual must flip nothing"
+
+
+def test_patching_returns_per_position_structure(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 80.0},
+        "forced": True, "max_tokens": 6, "patch_layer": 1,
+        "patch_positions": [0, 1, 2]})
+    assert r.status_code == 200, r.text
+    res = r.json()["patching"]
+    assert [e["pos"] for e in res["results"]] == [0, 1, 2]
+    for e in res["results"]:
+        assert e["n_flips"] >= 0 and "token" in e
+        assert (e["first_flip"] is None) == (e["n_flips"] == 0)

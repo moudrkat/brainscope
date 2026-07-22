@@ -861,6 +861,7 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
         handles, _ = _install_steer_stack(specs)
     scan = _tool_scan_new()
     stacks = []
+    preds = []
     contrib = {"attn": [], "mlp": []}
     attr_handles = []
     if attribute_layer is not None and attr_direction is not None:
@@ -917,6 +918,7 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
                             use_cache=True, output_hidden_states=True)
                 past = out.past_key_values
                 stacks.append(_stack_last(out.hidden_states).to(torch.float32).cpu())
+                preds.append(int(out.logits[0, -1].argmax()))
     finally:
         for h in handles:
             h.remove()
@@ -924,11 +926,63 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
             h.remove()
         state["in_prefill"] = False
         state["steer_mute"] = False
-    return {"stacks": stacks, "contrib": contrib, "head_contrib": head_contrib}
+    return {"stacks": stacks, "preds": preds, "contrib": contrib,
+            "head_contrib": head_contrib}
+
+
+def _patch_pass(prompt_ids, forced_ids, patch_layer, patch_pos, patch_vec) -> list:
+    """Clean forced pass with ONE position's residual (at patch_layer's
+    output) replaced by the steered version. Returns per-position argmax
+    predictions — compare with the clean pass to see how far one position's
+    patch propagates."""
+    tok, model = state["tokenizer"], state["model"]
+    layers = _decoder_layers(model)
+    L = min(int(patch_layer), len(layers) - 1)
+    vec = patch_vec.to(state["device"])
+    step = {"i": -1}
+
+    def hook(_m, _i, out):
+        if state.get("in_prefill"):
+            return out
+        step["i"] += 1
+        if step["i"] != patch_pos:
+            return out
+        o = out[0] if isinstance(out, tuple) else out
+        o = o.clone()
+        o[0, -1] = vec.to(o.dtype)
+        return (o, *out[1:]) if isinstance(out, tuple) else o
+
+    h = layers[L].register_forward_hook(hook)
+    scan = _tool_scan_new()
+    preds = []
+    try:
+        with torch.no_grad():
+            past = None
+            state["in_prefill"] = True
+            state["steer_mute"] = not scan["speak"]
+            for i in range(0, prompt_ids.shape[1], PREFILL_CHUNK):
+                out = model(input_ids=prompt_ids[:, i:i + PREFILL_CHUNK],
+                            past_key_values=past, use_cache=True)
+                past = out.past_key_values
+            state["in_prefill"] = False
+            for j in range(forced_ids.shape[1]):
+                piece = tok.decode(forced_ids[0, j])
+                _tool_scan(scan, piece)
+                state["steer_mute"] = not scan["speak"]
+                out = model(input_ids=forced_ids[:, j:j + 1], past_key_values=past,
+                            use_cache=True)
+                past = out.past_key_values
+                preds.append(int(out.logits[0, -1].argmax()))
+    finally:
+        h.remove()
+        state["in_prefill"] = False
+        state["steer_mute"] = False
+    return preds
 
 
 def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
-                 attribute_layer=None, heads_layer=None) -> dict:
+                 attribute_layer=None, heads_layer=None, patch_layer=None,
+                 patch_positions=None) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
     tokens (unsteered vs steered). Position-aligned by construction."""
     notify = lambda payload: None
@@ -977,6 +1031,31 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
                 counts[w] = counts.get(w, 0) + 1
         positions.append(entry)
     suppressed = sorted(counts.items(), key=lambda x: -x[1])[:25]
+    patching = None
+    if patch_layer is not None:
+        tok2 = state["tokenizer"]
+        n_pos = min(len(clean["stacks"]), len(steered["stacks"]))
+        pos_list = (patch_positions if patch_positions
+                    else list(range(n_pos)))
+        results = []
+        with _GEN_LOCK:
+            for p in pos_list:
+                if not 0 <= p < n_pos:
+                    continue
+                pv = steered["stacks"][p][min(int(patch_layer),
+                                              steered["stacks"][p].shape[0] - 1)]
+                preds = _patch_pass(prompt_ids, forced_ids, patch_layer, p, pv)
+                flips = [j for j in range(p, min(len(preds), len(clean["preds"])))
+                         if preds[j] != clean["preds"][j]]
+                results.append({
+                    "pos": p, "token": tok2.decode(forced_ids[0, p]),
+                    "n_flips": len(flips),
+                    "first_flip": flips[0] if flips else None,
+                    "examples": [{"i": j,
+                                  "clean": tok2.decode(clean["preds"][j]),
+                                  "patched": tok2.decode(preds[j])}
+                                 for j in flips[:3]]})
+        patching = {"layer": int(patch_layer), "results": results}
     attribution = None
     if attribute_layer is not None:
         attribution = {"layer": int(attribute_layer),
@@ -992,6 +1071,7 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     return {"baseline_text": base_text,
             "attribution": attribution,
             "head_attribution": heads,
+            "patching": patching,
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
@@ -1021,7 +1101,8 @@ async def replay(body: dict):
             _forced_diff, messages, body.get("tools"), body.get("tool_choice"),
             steering, int(body.get("max_tokens") or 256),
             float(body.get("temperature") or 0), body.get("attribute_layer"),
-            body.get("attribute_heads_layer"))
+            body.get("attribute_heads_layer"), body.get("patch_layer"),
+            body.get("patch_positions"))
         return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
