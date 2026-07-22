@@ -23,7 +23,8 @@ import torch
 
 
 def export(dirs_path: str, out_dir: str, names: list[str] | None = None,
-           model: str | None = None, meta_path: str | None = None) -> dict:
+           model: str | None = None, meta_path: str | None = None,
+           passport: dict | None = None) -> dict:
     """Export directions to hotwire .pt files + manifest. Returns the manifest."""
     dirs = json.loads(Path(dirs_path).read_text())
     meta = {}
@@ -51,6 +52,7 @@ def export(dirs_path: str, out_dir: str, names: list[str] | None = None,
             "unit_norm": max(norms) <= 1.001 and min(norms) >= 0.999,
             "model": model or meta.get("model"),
             "source": str(dirs_path),
+            **(passport or {}).get(name, {}),
             "calibration_regime": {
                 "backend": "brainscope",
                 "note": ("brainscope steers generation (and mutes tool-call "
@@ -76,9 +78,15 @@ def main(argv=None) -> None:
     ap.add_argument("--names", default=None,
                     help="comma-separated direction names (default: all)")
     ap.add_argument("--model", default=None, help="model id for the passport")
+    ap.add_argument("--passport", default=None,
+                    help="JSON file of per-name passport extras, e.g. "
+                         '{"calm": {"calibrated": {"layer": 20, "scale": 3, '
+                         '"decode_only": true}, "eval": {"violations": "0/16"}, '
+                         '"recipe": "recipes/calm.json"}}')
     args = ap.parse_args(argv)
     names = [n.strip() for n in args.names.split(",")] if args.names else None
-    manifest = export(args.dirs, args.out, names, args.model, args.meta)
+    extras = json.loads(Path(args.passport).read_text()) if args.passport else None
+    manifest = export(args.dirs, args.out, names, args.model, args.meta, extras)
     for e in manifest["vectors"]:
         tag = "unit-norm" if e["unit_norm"] else f"norm {e['norm_min']}..{e['norm_max']}"
         print(f"exported {e['name']:<40} {e['shape']} ({tag})")

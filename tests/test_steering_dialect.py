@@ -138,3 +138,78 @@ def test_parity_compare_report():
     assert rep["n"] == 3 and rep["exact_match"] == 1
     assert rep["first_divergence_chars"] == [None, 7, 2]
     assert rep["mean_words_a"] > rep["mean_words_b"]
+
+
+def test_replay_ab_with_cos_summary(client, direction):
+    spec = {"id": "vec", "layer": 1, "scale": 60.0, "decode_only": True}
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Tell me a story."}],
+        "steering": spec, "max_tokens": 8})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["baseline"]["text"] and d["steered"]["text"]
+    assert d["baseline"]["text"] != d["steered"]["text"]
+    assert d["steered"]["steer"][0]["scope"] == "request"
+    cos = d["steered"]["cos_by_layer"]["vec"]
+    assert len(cos) >= 1 and all(0.0 <= c <= 1.0 for c in cos)
+
+
+def test_replay_unknown_direction_400(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "hi"}],
+        "steering": {"id": "ghost", "layer": 1, "scale": 2}})
+    assert r.status_code == 400
+
+
+def test_trace_replay_roundtrip(client, direction):
+    chat(client, "Original conversation.", max_tokens=6)
+    trace_id = bs.state["gen"]["id"]
+    r = client.post(f"/traces/{trace_id}/replay", json={
+        "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "max_tokens": 6})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["baseline"]["text"] and d["steered"]["text"]
+
+
+def test_trace_replay_predating_messages_409(client, direction, tmp_path):
+    chat(client, "Old trace.", max_tokens=4)
+    trace_id = bs.state["gen"]["id"]
+    # simulate a pre-persistence trace: strip the replay context on disk
+    import json as _json
+    path = bs.state["traces"].root / f"{trace_id}.json"
+    t = _json.loads(path.read_text())
+    t.pop("replay", None)
+    path.write_text(_json.dumps(t))
+    r = client.post(f"/traces/{trace_id}/replay",
+                    json={"steering": {"id": "vec", "layer": 1, "scale": 2}})
+    assert r.status_code == 409
+
+
+def test_replay_jlens_suppressed_words(client, direction, fitted_lens):
+    bs.state["jlens"] = fitted_lens
+    bs.state["jlens_on"] = True
+    try:
+        r = client.post("/replay", json={
+            "messages": [{"role": "user", "content": "Tell me a story."}],
+            "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+            "max_tokens": 8})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert "jlens_suppressed" in d
+        for e in d["jlens_suppressed"]:
+            assert e["baseline_count"] >= 1 and e["word"]
+    finally:
+        bs.state["jlens_on"] = False
+
+
+def test_export_passport_extras(tmp_path):
+    p = tmp_path / "dirs.json"
+    p.write_text(json.dumps({"calm": [0.1] * 8}))
+    extras = {"calm": {"calibrated": {"layer": 2, "scale": 3, "decode_only": True},
+                       "eval": {"violations": "0/16"},
+                       "recipe": "recipes/calm.json"}}
+    manifest = export(str(p), str(tmp_path / "out"), passport=extras)
+    e = manifest["vectors"][0]
+    assert e["calibrated"]["scale"] == 3 and e["eval"]["violations"] == "0/16"
+    assert e["recipe"] == "recipes/calm.json"

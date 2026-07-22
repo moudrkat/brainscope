@@ -88,6 +88,7 @@ class TraceStore:
                  "tokens": gen.get("tokens", []), "norms": gen.get("norms", []),
                  "lens": gen.get("lens", []), "jlens": gen.get("jlens", []),
                  "think": think_span(all_tokens),
+                 "replay": gen.get("replay"),
                  "has_hidden": bool(hidden)}
         (self.root / f"{trace['id']}.json").write_text(
             json.dumps(trace, ensure_ascii=False))

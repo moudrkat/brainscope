@@ -557,6 +557,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
+    replay_ctx = {"messages": messages, "tools": tools, "tool_choice": tool_choice}
 
     # tool_choice enforcement without guided decoding: seed the generation with
     # the opening of a tool call in the model's own format, so the only way to
@@ -584,7 +585,8 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
 
     n_prompt = ids.shape[1]
     prompt_ids = ids[0].tolist()[-4096:]  # axis labels; very long prompts keep the tail
-    gen = {"id": uuid.uuid4().hex[:12], "n_prompt": n_prompt,
+    gen = {"replay": replay_ctx,
+           "id": uuid.uuid4().hex[:12], "n_prompt": n_prompt,
            "prompt_offset": n_prompt - len(prompt_ids),
            "prompt_tokens": [tok.decode(i) for i in prompt_ids],
            "tokens": [], "all_tokens": [], "norms": [], "lens": [], "jlens": [],
@@ -780,6 +782,114 @@ async def chat_completions(body: dict):
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
         notify, steering, tags, body.get("tool_choice"))
     return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
+
+
+def _cos_summary(hidden_steps: list, direction) -> list:
+    """Mean |cosine| per layer between captured residuals and a direction.
+    hidden_steps: per-step (n_layers, hidden) fp16 tensors from gen["hidden"]."""
+    if not hidden_steps:
+        return []
+    import torch.nn.functional as F
+    stack = torch.stack([h.float() for h in hidden_steps])   # (steps, layers, hidden)
+    n_layers = stack.shape[1]
+    out = []
+    for i in range(n_layers):
+        row = direction[min(i, direction.shape[0] - 1)] if direction.dim() == 2 else direction
+        cs = F.cosine_similarity(stack[:, i], row.float().unsqueeze(0), dim=-1)
+        out.append(round(float(cs.abs().mean()), 4))
+    return out
+
+
+def _harvest_words(node, out: dict) -> None:
+    """Count every token string in a nested jlens readout structure."""
+    if isinstance(node, str):
+        w = node.strip()
+        if w:
+            out[w] = out.get(w, 0) + 1
+    elif isinstance(node, dict):
+        for v in node.values():
+            _harvest_words(v, out)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            _harvest_words(v, out)
+
+
+def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> dict:
+    """Generate the same conversation twice — baseline and steered — and
+    summarize what the vector did: both texts, both trace ids, the steered
+    run's mean |cos| per layer against the steered direction(s), and (when
+    the J-lens is on) which words the vector suppressed: represented and
+    pushed toward output in the baseline, gone under steering."""
+    loop_notify = lambda payload: None
+    result, jl = {}, {}
+    for label, spec in (("baseline", None), ("steered", steering)):
+        text = generate_with_signals(messages, tools, max_tokens, temperature,
+                                     loop_notify, spec, None, tool_choice)
+        gen = state["gen"] or {}
+        entry = {"text": text, "trace_id": gen.get("id"),
+                 "steer": gen.get("steer")}
+        jl[label] = list(gen.get("jlens") or [])
+        if label == "steered" and gen.get("hidden"):
+            specs = _normalize_steer(steering)
+            entry["cos_by_layer"] = {
+                s["name"]: _cos_summary(gen["hidden"], state["directions"][s["name"]])
+                for s in specs if s["name"] in state["directions"]}
+        result[label] = entry
+    if jl["baseline"] or jl["steered"]:
+        base_w, steer_w = {}, {}
+        _harvest_words(jl["baseline"], base_w)
+        _harvest_words(jl["steered"], steer_w)
+        suppressed = sorted(
+            ((w, c) for w, c in base_w.items() if steer_w.get(w, 0) == 0),
+            key=lambda x: -x[1])[:20]
+        result["jlens_suppressed"] = [
+            {"word": w, "baseline_count": c} for w, c in suppressed]
+    return result
+
+
+@app.post("/replay")
+async def replay(body: dict):
+    """A/B a conversation: {"messages": [...], "steering": <spec>} ->
+    baseline + steered texts, trace ids, and per-layer |cos| of the steered
+    generation against the steering direction — the one-call answer to
+    "what did the vector actually do here"."""
+    messages = body.get("messages")
+    steering = body.get("steering")
+    if not messages or steering is None:
+        return JSONResponse({"error": "need messages and steering"}, status_code=400)
+    if isinstance(steering, str):
+        try:
+            steering = json.loads(steering)
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "steering is not valid JSON"}, status_code=400)
+    if not _normalize_steer(steering):
+        return JSONResponse({"error": "steering spec matched no known direction",
+                             "directions": sorted(state["directions"])}, status_code=400)
+    out = await asyncio.to_thread(
+        _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
+        int(body.get("max_tokens") or 256), float(body.get("temperature") or 0))
+    return JSONResponse(out)
+
+
+@app.post("/traces/{trace_id}/replay")
+async def replay_trace(trace_id: str, body: dict):
+    """Replay a SAVED conversation with a different steering spec. Only
+    traces recorded after messages started being persisted are replayable."""
+    if not state["traces"]:
+        return JSONResponse({"error": "traces disabled"}, status_code=404)
+    trace = state["traces"].load(trace_id)
+    if trace is None:
+        return JSONResponse({"error": "unknown trace"}, status_code=404)
+    replay_ctx = trace.get("replay") or {}
+    if not replay_ctx.get("messages"):
+        return JSONResponse({"error": "trace predates message persistence; "
+                             "use POST /replay with explicit messages"},
+                            status_code=409)
+    body = dict(body or {})
+    body["messages"] = replay_ctx["messages"]
+    body.setdefault("tools", replay_ctx.get("tools"))
+    body.setdefault("tool_choice", replay_ctx.get("tool_choice"))
+    return await replay(body)
 
 
 @app.get("/v1/models")
