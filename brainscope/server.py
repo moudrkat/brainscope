@@ -984,31 +984,65 @@ def _patch_pass(prompt_ids, forced_ids, patch_layer, patch_pos, patch_vec) -> li
     return preds
 
 
+_CLEAN_CACHE: dict = {}   # prompt-keyed clean side (independent of steering)
+_CLEAN_CACHE_MAX = 16
+
+
+def _clean_key(messages, tools, tool_choice, max_tokens, attribute_layer,
+               heads_layer, want_kl, direction_name):
+    import hashlib
+    blob = json.dumps([messages, tools, tool_choice, max_tokens,
+                       attribute_layer, heads_layer, want_kl,
+                       direction_name if (attribute_layer is not None
+                                          or heads_layer is not None) else None],
+                      sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
 def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
                  attribute_layer=None, heads_layer=None, patch_layer=None,
                  patch_positions=None, kl=False) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
-    tokens (unsteered vs steered). Position-aligned by construction."""
+    tokens (unsteered vs steered). Position-aligned by construction.
+
+    The baseline generation and the CLEAN forced pass do not depend on the
+    steering spec, so they are cached per prompt: calibrating one vector
+    over many (layer, scale) trials on the same prompts pays the (expensive,
+    on a long scaffold) clean side once, then only the steered pass per
+    trial — roughly a 3x speedup on repeated prompts.
+    """
     notify = lambda payload: None
-    base_text = generate_with_signals(messages, tools, max_tokens, temperature,
-                                      notify, None, None, tool_choice)
-    gen = state["gen"] or {}
     tok = state["tokenizer"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False,
                                      add_generation_prompt=True, **kwargs)
-    all_tokens = gen.get("all_tokens") or []
-    prompt_ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
-    forced_ids = tok("".join(all_tokens), return_tensors="pt",
-                     add_special_tokens=False).input_ids.to(state["device"])
     specs = _normalize_steer(steering)
     direction = state["directions"][specs[0]["name"]] if specs else None
     want_kl = bool(kl)
-    with _GEN_LOCK:
-        clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer,
-                             direction, heads_layer, want_kl)
-        steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
-                               direction, heads_layer, want_kl)
+    ck = _clean_key(messages, tools, tool_choice, max_tokens, attribute_layer,
+                    heads_layer, want_kl, specs[0]["name"] if specs else None)
+    cached = _CLEAN_CACHE.get(ck)
+    if cached is not None:
+        base_text, forced_ids, prompt_ids, clean = cached
+        with _GEN_LOCK:
+            steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
+                                   direction, heads_layer, want_kl)
+    else:
+        base_text = generate_with_signals(messages, tools, max_tokens, temperature,
+                                          notify, None, None, tool_choice)
+        gen = state["gen"] or {}
+        all_tokens = gen.get("all_tokens") or []
+        prompt_ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
+        forced_ids = tok("".join(all_tokens), return_tensors="pt",
+                         add_special_tokens=False).input_ids.to(state["device"])
+        with _GEN_LOCK:
+            clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer,
+                                 direction, heads_layer, want_kl)
+            steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
+                                   direction, heads_layer, want_kl)
+        if len(_CLEAN_CACHE) >= _CLEAN_CACHE_MAX:
+            _CLEAN_CACHE.pop(next(iter(_CLEAN_CACHE)))
+        _CLEAN_CACHE[ck] = (base_text, forced_ids, prompt_ids, clean)
 
     positions = []
     counts: dict = {}

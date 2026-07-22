@@ -319,3 +319,23 @@ def test_forced_diff_kl_divergence(client, direction):
         "steering": {"id": "vec", "layer": 1, "scale": 60.0},
         "forced": True, "max_tokens": 6, "kl": True}).json()
     assert big["kl"]["mean"] > z["kl"]["mean"], "strong steering => larger KL"
+
+
+def test_forced_diff_clean_cache_reuse(client, direction, monkeypatch):
+    """Second forced diff on the same prompt with a different scale must NOT
+    regenerate the baseline — the clean side is cached."""
+    import brainscope.server as srv
+    srv._CLEAN_CACHE.clear()
+    calls = {"n": 0}
+    orig = srv.generate_with_signals
+    def counting(*a, **k):
+        calls["n"] += 1
+        return orig(*a, **k)
+    monkeypatch.setattr(srv, "generate_with_signals", counting)
+    msgs = [{"role": "user", "content": "Say a few words please."}]
+    for scale in (10.0, 20.0, 30.0):
+        r = client.post("/replay", json={
+            "messages": msgs, "steering": {"id": "vec", "layer": 1, "scale": scale},
+            "forced": True, "max_tokens": 5})
+        assert r.status_code == 200
+    assert calls["n"] == 1, f"baseline generated {calls['n']}x, expected 1 (cached)"
