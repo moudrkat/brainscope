@@ -253,3 +253,18 @@ def test_direction_unembed(client, direction):
     assert len(d["top_up"]) > 0 and len(d["top_down"]) > 0
     assert d["top_up"] != d["top_down"]
     assert client.get("/directions/ghost/unembed").status_code == 404
+
+
+def test_forced_replay_component_attribution(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "forced": True, "max_tokens": 5, "attribute_layer": 2})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    a = d["attribution"]
+    assert a["layer"] == 2
+    n = len(d["tokens"])
+    assert len(a["clean"]["attn"]) == len(a["clean"]["mlp"]) == n
+    assert len(a["steered"]["attn"]) == n
+    assert a["steered"] != a["clean"], "huge vector must shift sublayer writes"

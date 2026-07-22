@@ -847,7 +847,8 @@ def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> 
     return result
 
 
-def _forced_pass(prompt_ids, forced_ids, steering) -> dict:
+def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
+                 attr_direction=None) -> dict:
     """Teacher-forced pass: drive the model through EXACT given tokens,
     token by token — same regime as real decode (prefill flag, tool-scan
     mute) — capturing per-position layer stacks. With identical tokens in
@@ -860,6 +861,24 @@ def _forced_pass(prompt_ids, forced_ids, steering) -> dict:
         handles, _ = _install_steer_stack(specs)
     scan = _tool_scan_new()
     stacks = []
+    contrib = {"attn": [], "mlp": []}
+    attr_handles = []
+    if attribute_layer is not None and attr_direction is not None:
+        layers = _decoder_layers(model)
+        L = min(int(attribute_layer), len(layers) - 1)
+        row = (attr_direction[min(L, attr_direction.shape[0] - 1)]
+               if attr_direction.dim() == 2 else attr_direction)
+        vhat = torch.nn.functional.normalize(row.detach().float(), dim=0).to(state["device"])
+
+        def _rec(name):
+            def hook(_m, _i, out):
+                if state.get("in_prefill"):
+                    return
+                o = out[0] if isinstance(out, tuple) else out
+                contrib[name].append(round(float(o[0, -1].float() @ vhat), 4))
+            return hook
+        attr_handles = [layers[L].self_attn.register_forward_hook(_rec("attn")),
+                        layers[L].mlp.register_forward_hook(_rec("mlp"))]
     try:
         with torch.no_grad():
             past = None
@@ -881,12 +900,15 @@ def _forced_pass(prompt_ids, forced_ids, steering) -> dict:
     finally:
         for h in handles:
             h.remove()
+        for h in attr_handles:
+            h.remove()
         state["in_prefill"] = False
         state["steer_mute"] = False
-    return {"stacks": stacks}
+    return {"stacks": stacks, "contrib": contrib}
 
 
-def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature) -> dict:
+def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
+                 attribute_layer=None) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
     tokens (unsteered vs steered). Position-aligned by construction."""
     notify = lambda payload: None
@@ -901,11 +923,11 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     prompt_ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     forced_ids = tok("".join(all_tokens), return_tensors="pt",
                      add_special_tokens=False).input_ids.to(state["device"])
-    with _GEN_LOCK:
-        clean = _forced_pass(prompt_ids, forced_ids, None)
-        steered = _forced_pass(prompt_ids, forced_ids, steering)
     specs = _normalize_steer(steering)
     direction = state["directions"][specs[0]["name"]] if specs else None
+    with _GEN_LOCK:
+        clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer, direction)
+        steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer, direction)
 
     positions = []
     counts: dict = {}
@@ -933,7 +955,12 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
                 counts[w] = counts.get(w, 0) + 1
         positions.append(entry)
     suppressed = sorted(counts.items(), key=lambda x: -x[1])[:25]
+    attribution = None
+    if attribute_layer is not None:
+        attribution = {"layer": int(attribute_layer),
+                       "clean": clean["contrib"], "steered": steered["contrib"]}
     return {"baseline_text": base_text,
+            "attribution": attribution,
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
@@ -962,7 +989,7 @@ async def replay(body: dict):
         out = await asyncio.to_thread(
             _forced_diff, messages, body.get("tools"), body.get("tool_choice"),
             steering, int(body.get("max_tokens") or 256),
-            float(body.get("temperature") or 0))
+            float(body.get("temperature") or 0), body.get("attribute_layer"))
         return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
