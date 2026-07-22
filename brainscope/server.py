@@ -1012,6 +1012,7 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
 
     positions = []
     counts: dict = {}
+    pcounts: dict = {}
     jl = state["jlens"] if (state["jlens"] is not None and state["jlens_on"]) else None
     import torch.nn.functional as F
     n = min(len(clean["stacks"]), len(steered["stacks"]))
@@ -1031,11 +1032,16 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
             _harvest_words(_topk_readout(jl.transport(clean["stacks"][j].to(state["device"]).float()), 5), base_words)
             _harvest_words(_topk_readout(jl.transport(steered["stacks"][j].to(state["device"]).float()), 5), steer_words)
             dropped = sorted(w for w in base_words if w not in steer_words)
+            added = sorted(w for w in steer_words if w not in base_words)
             entry["dropped"] = dropped[:8]
+            entry["added"] = added[:8]
             for w in dropped:
                 counts[w] = counts.get(w, 0) + 1
+            for w in added:
+                pcounts[w] = pcounts.get(w, 0) + 1
         positions.append(entry)
     suppressed = sorted(counts.items(), key=lambda x: -x[1])[:25]
+    promoted = sorted(pcounts.items(), key=lambda x: -x[1])[:25]
     patching = None
     if patch_layer is not None:
         tok2 = state["tokenizer"]
@@ -1092,7 +1098,9 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
-                {"word": w, "positions": c} for w, c in suppressed]}
+                {"word": w, "positions": c} for w, c in suppressed],
+            "promoted_positional": [
+                {"word": w, "positions": c} for w, c in promoted]}
 
 
 @app.post("/replay")
