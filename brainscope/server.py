@@ -848,7 +848,7 @@ def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> 
 
 
 def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
-                 attr_direction=None, heads_layer=None) -> dict:
+                 attr_direction=None, heads_layer=None, capture_logprobs=False) -> dict:
     """Teacher-forced pass: drive the model through EXACT given tokens,
     token by token — same regime as real decode (prefill flag, tool-scan
     mute) — capturing per-position layer stacks. With identical tokens in
@@ -862,6 +862,7 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
     scan = _tool_scan_new()
     stacks = []
     preds = []
+    logprobs = []
     contrib = {"attn": [], "mlp": []}
     attr_handles = []
     if attribute_layer is not None and attr_direction is not None:
@@ -918,7 +919,10 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
                             use_cache=True, output_hidden_states=True)
                 past = out.past_key_values
                 stacks.append(_stack_last(out.hidden_states).to(torch.float32).cpu())
-                preds.append(int(out.logits[0, -1].argmax()))
+                lg = out.logits[0, -1]
+                preds.append(int(lg.argmax()))
+                if capture_logprobs:
+                    logprobs.append(torch.log_softmax(lg.float(), dim=-1).cpu())
     finally:
         for h in handles:
             h.remove()
@@ -926,8 +930,8 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
             h.remove()
         state["in_prefill"] = False
         state["steer_mute"] = False
-    return {"stacks": stacks, "preds": preds, "contrib": contrib,
-            "head_contrib": head_contrib}
+    return {"stacks": stacks, "preds": preds, "logprobs": logprobs,
+            "contrib": contrib, "head_contrib": head_contrib}
 
 
 def _patch_pass(prompt_ids, forced_ids, patch_layer, patch_pos, patch_vec) -> list:
@@ -982,7 +986,7 @@ def _patch_pass(prompt_ids, forced_ids, patch_layer, patch_pos, patch_vec) -> li
 
 def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
                  attribute_layer=None, heads_layer=None, patch_layer=None,
-                 patch_positions=None) -> dict:
+                 patch_positions=None, kl=False) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
     tokens (unsteered vs steered). Position-aligned by construction."""
     notify = lambda payload: None
@@ -999,11 +1003,12 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
                      add_special_tokens=False).input_ids.to(state["device"])
     specs = _normalize_steer(steering)
     direction = state["directions"][specs[0]["name"]] if specs else None
+    want_kl = bool(kl)
     with _GEN_LOCK:
         clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer,
-                             direction, heads_layer)
+                             direction, heads_layer, want_kl)
         steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
-                               direction, heads_layer)
+                               direction, heads_layer, want_kl)
 
     positions = []
     counts: dict = {}
@@ -1068,10 +1073,22 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
         heads = {"layer": int(heads_layer),
                  "clean_mean": [mean(clean["head_contrib"], h) for h in range(n_heads)],
                  "steered_mean": [mean(steered["head_contrib"], h) for h in range(n_heads)]}
+    kl_stats = None
+    if want_kl and clean["logprobs"] and steered["logprobs"]:
+        n = min(len(clean["logprobs"]), len(steered["logprobs"]))
+        kls = []
+        for j in range(n):
+            lc, ls = clean["logprobs"][j], steered["logprobs"][j]
+            # KL(steered || clean) = sum p_s * (logp_s - logp_c)
+            kls.append(float((ls.exp() * (ls - lc)).sum()))
+        import statistics as _st
+        kl_stats = {"mean": round(_st.mean(kls), 5),
+                    "max": round(max(kls), 5), "n": n}
     return {"baseline_text": base_text,
             "attribution": attribution,
             "head_attribution": heads,
             "patching": patching,
+            "kl": kl_stats,
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
@@ -1102,7 +1119,7 @@ async def replay(body: dict):
             steering, int(body.get("max_tokens") or 256),
             float(body.get("temperature") or 0), body.get("attribute_layer"),
             body.get("attribute_heads_layer"), body.get("patch_layer"),
-            body.get("patch_positions"))
+            body.get("patch_positions"), body.get("kl"))
         return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,

@@ -306,3 +306,16 @@ def test_patching_returns_per_position_structure(client, direction):
     for e in res["results"]:
         assert e["n_flips"] >= 0 and "token" in e
         assert (e["first_flip"] is None) == (e["n_flips"] == 0)
+
+
+def test_forced_diff_kl_divergence(client, direction):
+    z = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 1e-9},
+        "forced": True, "max_tokens": 6, "kl": True}).json()
+    assert z["kl"]["mean"] < 1e-3, "near-zero steering => near-zero KL"
+    big = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "forced": True, "max_tokens": 6, "kl": True}).json()
+    assert big["kl"]["mean"] > z["kl"]["mean"], "strong steering => larger KL"
