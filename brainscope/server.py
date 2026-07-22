@@ -847,6 +847,99 @@ def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> 
     return result
 
 
+def _forced_pass(prompt_ids, forced_ids, steering) -> dict:
+    """Teacher-forced pass: drive the model through EXACT given tokens,
+    token by token — same regime as real decode (prefill flag, tool-scan
+    mute) — capturing per-position layer stacks. With identical tokens in
+    an unsteered and a steered pass, any readout difference at a position
+    is the vector's direct effect: no trajectory divergence."""
+    tok, model = state["tokenizer"], state["model"]
+    specs = _normalize_steer(steering) if steering else []
+    handles = []
+    if specs:
+        handles, _ = _install_steer_stack(specs)
+    scan = _tool_scan_new()
+    stacks = []
+    try:
+        with torch.no_grad():
+            past = None
+            state["in_prefill"] = True
+            state["steer_mute"] = not scan["speak"]
+            for i in range(0, prompt_ids.shape[1], PREFILL_CHUNK):
+                out = model(input_ids=prompt_ids[:, i:i + PREFILL_CHUNK],
+                            past_key_values=past, use_cache=True)
+                past = out.past_key_values
+            state["in_prefill"] = False
+            for j in range(forced_ids.shape[1]):
+                piece = tok.decode(forced_ids[0, j])
+                _tool_scan(scan, piece)
+                state["steer_mute"] = not scan["speak"]
+                out = model(input_ids=forced_ids[:, j:j + 1], past_key_values=past,
+                            use_cache=True, output_hidden_states=True)
+                past = out.past_key_values
+                stacks.append(_stack_last(out.hidden_states).to(torch.float32).cpu())
+    finally:
+        for h in handles:
+            h.remove()
+        state["in_prefill"] = False
+        state["steer_mute"] = False
+    return {"stacks": stacks}
+
+
+def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature) -> dict:
+    """Baseline generation, then two teacher-forced passes over its exact
+    tokens (unsteered vs steered). Position-aligned by construction."""
+    notify = lambda payload: None
+    base_text = generate_with_signals(messages, tools, max_tokens, temperature,
+                                      notify, None, None, tool_choice)
+    gen = state["gen"] or {}
+    tok = state["tokenizer"]
+    kwargs = {"tools": tools} if tools else {}
+    prompt = tok.apply_chat_template(messages, tokenize=False,
+                                     add_generation_prompt=True, **kwargs)
+    all_tokens = gen.get("all_tokens") or []
+    prompt_ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
+    forced_ids = tok("".join(all_tokens), return_tensors="pt",
+                     add_special_tokens=False).input_ids.to(state["device"])
+    with _GEN_LOCK:
+        clean = _forced_pass(prompt_ids, forced_ids, None)
+        steered = _forced_pass(prompt_ids, forced_ids, steering)
+    specs = _normalize_steer(steering)
+    direction = state["directions"][specs[0]["name"]] if specs else None
+
+    positions = []
+    counts: dict = {}
+    jl = state["jlens"] if (state["jlens"] is not None and state["jlens_on"]) else None
+    import torch.nn.functional as F
+    n = min(len(clean["stacks"]), len(steered["stacks"]))
+    pieces = [tok.decode(forced_ids[0, j]) for j in range(n)]
+    for j in range(n):
+        entry = {"i": j, "token": pieces[j]}
+        if direction is not None:
+            st = steered["stacks"][j]
+            row_cos = []
+            for i in range(st.shape[0]):
+                row = direction[min(i, direction.shape[0] - 1)] if direction.dim() == 2 else direction
+                row_cos.append(round(float(F.cosine_similarity(
+                    st[i], row.detach().float().cpu(), dim=0)), 4))
+            entry["cos"] = row_cos
+        if jl is not None:
+            base_words, steer_words = {}, {}
+            _harvest_words(_topk_readout(jl.transport(clean["stacks"][j].to(state["device"]).float()), 5), base_words)
+            _harvest_words(_topk_readout(jl.transport(steered["stacks"][j].to(state["device"]).float()), 5), steer_words)
+            dropped = sorted(w for w in base_words if w not in steer_words)
+            entry["dropped"] = dropped[:8]
+            for w in dropped:
+                counts[w] = counts.get(w, 0) + 1
+        positions.append(entry)
+    suppressed = sorted(counts.items(), key=lambda x: -x[1])[:25]
+    return {"baseline_text": base_text,
+            "tokens": pieces,
+            "positions": positions,
+            "suppressed_positional": [
+                {"word": w, "positions": c} for w, c in suppressed]}
+
+
 @app.post("/replay")
 async def replay(body: dict):
     """A/B a conversation: {"messages": [...], "steering": <spec>} ->
@@ -865,6 +958,12 @@ async def replay(body: dict):
     if not _normalize_steer(steering):
         return JSONResponse({"error": "steering spec matched no known direction",
                              "directions": sorted(state["directions"])}, status_code=400)
+    if body.get("forced"):
+        out = await asyncio.to_thread(
+            _forced_diff, messages, body.get("tools"), body.get("tool_choice"),
+            steering, int(body.get("max_tokens") or 256),
+            float(body.get("temperature") or 0))
+        return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
         int(body.get("max_tokens") or 256), float(body.get("temperature") or 0))

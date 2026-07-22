@@ -213,3 +213,34 @@ def test_export_passport_extras(tmp_path):
     e = manifest["vectors"][0]
     assert e["calibrated"]["scale"] == 3 and e["eval"]["violations"] == "0/16"
     assert e["recipe"] == "recipes/calm.json"
+
+
+def test_forced_replay_zero_strength_is_identical(client, direction):
+    """Teacher-forced diff with strength ~0 must suppress NOTHING and
+    change nothing — the two passes are literally the same computation."""
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 1e-9},
+        "forced": True, "max_tokens": 6})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["suppressed_positional"] == []
+    assert len(d["positions"]) == len(d["tokens"]) > 0
+
+
+def test_forced_replay_steered_shows_direct_effect(client, direction, fitted_lens):
+    bs.state["jlens"] = fitted_lens
+    bs.state["jlens_on"] = True
+    try:
+        r = client.post("/replay", json={
+            "messages": [{"role": "user", "content": "Say a few words."}],
+            "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+            "forced": True, "max_tokens": 6})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d["suppressed_positional"], "huge vector must displace dispositions"
+        p = d["positions"][0]
+        assert "cos" in p and len(p["cos"]) >= 1
+        assert all(-1.0 <= c <= 1.0 for c in p["cos"])
+    finally:
+        bs.state["jlens_on"] = False
