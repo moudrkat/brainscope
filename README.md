@@ -4,10 +4,15 @@
 
 **Watch your model think while your app talks to it.**
 
-> **See it in 30 seconds, on your laptop, no GPU:** `pip install -e .` then
-> `brainscope --model tiny` (a 0.5B model on CPU). Open the page, type in the
-> built-in chat box, and watch each word surface through the layers *before* the
-> model writes it. No app to wire up, no card required. ([full quickstart ↓](#quickstart))
+## ⚡ Run in 30 s (laptop, no GPU)
+
+```bash
+pip install -e . && brainscope --model tiny   # 0.5B model, CPU is fine
+```
+
+Open the page it launches, type in the built-in chat box, and watch each word
+surface through the layers *before* the model writes it. No app to wire up,
+no card required. ([full quickstart ↓](#quickstart))
 
 An OpenAI-compatible chat server over any Hugging Face causal LM with a live
 view into the residual stream. What it does:
@@ -275,7 +280,38 @@ with one flag. That's the trade: brainscope is slower, but it sees
 everything. It's a lab instrument for development - run it next to
 production, not instead of it.
 
-## The stack
+## Where this sits in the lab
+
+```mermaid
+flowchart LR
+    hd["🧭 hidden-directions<br/>behavior → vector"]
+    bs(["🧠 brainscope<br/>watch the model think"])
+    hw["🔥 hotwire-vllm<br/>steering in production"]
+    st["🕹️ steeropathy<br/>agents talk via activations"]
+    tm["⚖️ in-two-minds<br/>agent hesitating between tools"]
+    sm["🧪 steering-mechanics<br/>how steering actually works"]
+
+    hd -->|vectors| bs
+    hd -->|vector + passport| hw
+    bs --> st
+    bs --> tm
+    bs -->|causal replay| sm
+    hw -.->|vector under study| sm
+
+    click hd "https://github.com/moudrkat/hidden-directions"
+    click bs "https://github.com/moudrkat/brainscope"
+    click hw "https://github.com/moudrkat/hotwire-vllm"
+    click st "https://github.com/moudrkat/steeropathy"
+    click tm "https://github.com/moudrkat/in-two-minds"
+    click sm "https://github.com/moudrkat/steering-mechanics"
+
+    classDef dim fill:#f6f8fa,stroke:#d0d7de,color:#57606a;
+    classDef here fill:#8957e5,stroke:#6e40c9,color:#ffffff;
+    class hd,bs,hw,st,tm,sm dim;
+    class bs here;
+```
+
+*Highlighted = this repo. The full lab map (with the two other repos' stories) lives on [moudrkat](https://github.com/moudrkat).*
 
 brainscope is the middle of a three-repo stack; each piece also runs alone:
 
