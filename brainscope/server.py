@@ -795,7 +795,7 @@ def _cos_summary(hidden_steps: list, direction) -> list:
     out = []
     for i in range(n_layers):
         row = direction[min(i, direction.shape[0] - 1)] if direction.dim() == 2 else direction
-        cs = F.cosine_similarity(stack[:, i], row.float().unsqueeze(0), dim=-1)
+        cs = F.cosine_similarity(stack[:, i], row.detach().float().cpu().unsqueeze(0), dim=-1)
         out.append(round(float(cs.abs().mean()), 4))
     return out
 
