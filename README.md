@@ -17,7 +17,14 @@ view into the residual stream. What it does:
   streams per-token, per-layer activity into the browser — logit lens,
   attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
-  drive it from a slider, per request, or by a tag-matched policy.
+  drive it from a slider, per request, or by a tag-matched policy. Speaks
+  [hotwire-vllm](https://github.com/moudrkat/hotwire-vllm)'s steering spec
+  (`{"id", "layer", "scale", "decode_only"}`, incl. the `vllm_xargs` wire
+  format) — **calibrate here, deploy there**: `python -m
+  brainscope.export_hotwire` ships vectors with a regime passport, and
+  `POST /replay` A/Bs any conversation under a spec, showing per-layer
+  cosine and which words the vector suppressed
+  ([docs](docs/steering.md)).
 - **Watch words surface before they're written** — a
   [J-lens](#j-lens-reading-ahead-of-the-output) (Jacobian lens, Anthropic
   2026) readout next to the logit lens: words represented and pushed toward
