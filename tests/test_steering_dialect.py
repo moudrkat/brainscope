@@ -268,3 +268,15 @@ def test_forced_replay_component_attribution(client, direction):
     assert len(a["clean"]["attn"]) == len(a["clean"]["mlp"]) == n
     assert len(a["steered"]["attn"]) == n
     assert a["steered"] != a["clean"], "huge vector must shift sublayer writes"
+
+
+def test_forced_replay_head_attribution(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "forced": True, "max_tokens": 5, "attribute_heads_layer": 2})
+    assert r.status_code == 200, r.text
+    h = r.json()["head_attribution"]
+    assert h["layer"] == 2
+    assert len(h["clean_mean"]) == len(h["steered_mean"]) == 4  # tiny model heads
+    assert h["clean_mean"] != h["steered_mean"]

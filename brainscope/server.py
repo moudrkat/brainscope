@@ -848,7 +848,7 @@ def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> 
 
 
 def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
-                 attr_direction=None) -> dict:
+                 attr_direction=None, heads_layer=None) -> dict:
     """Teacher-forced pass: drive the model through EXACT given tokens,
     token by token — same regime as real decode (prefill flag, tool-scan
     mute) — capturing per-position layer stacks. With identical tokens in
@@ -879,6 +879,26 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
             return hook
         attr_handles = [layers[L].self_attn.register_forward_hook(_rec("attn")),
                         layers[L].mlp.register_forward_hook(_rec("mlp"))]
+    head_contrib = []
+    if heads_layer is not None and attr_direction is not None:
+        layers = _decoder_layers(model)
+        HL = min(int(heads_layer), len(layers) - 1)
+        o_proj = layers[HL].self_attn.o_proj
+        hrow = (attr_direction[min(HL, attr_direction.shape[0] - 1)]
+                if attr_direction.dim() == 2 else attr_direction)
+        hvhat = torch.nn.functional.normalize(hrow.detach().float(), dim=0).to(state["device"])
+        n_heads = getattr(model.config, "num_attention_heads")
+        head_dim = o_proj.in_features // n_heads
+        # per-head write onto v: W_o[:, h] @ x_h · v̂ == x_h · (W_o[:, h].T @ v̂)
+        Wv = (o_proj.weight.float().T @ hvhat).view(n_heads, head_dim)
+
+        def _head_hook(_m, inp):
+            if state.get("in_prefill"):
+                return
+            x = inp[0][0, -1].float().view(n_heads, head_dim)
+            head_contrib.append([round(float((x[h] * Wv[h]).sum()), 4)
+                                 for h in range(n_heads)])
+        attr_handles.append(o_proj.register_forward_pre_hook(_head_hook))
     try:
         with torch.no_grad():
             past = None
@@ -904,11 +924,11 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
             h.remove()
         state["in_prefill"] = False
         state["steer_mute"] = False
-    return {"stacks": stacks, "contrib": contrib}
+    return {"stacks": stacks, "contrib": contrib, "head_contrib": head_contrib}
 
 
 def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
-                 attribute_layer=None) -> dict:
+                 attribute_layer=None, heads_layer=None) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
     tokens (unsteered vs steered). Position-aligned by construction."""
     notify = lambda payload: None
@@ -926,8 +946,10 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     specs = _normalize_steer(steering)
     direction = state["directions"][specs[0]["name"]] if specs else None
     with _GEN_LOCK:
-        clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer, direction)
-        steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer, direction)
+        clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer,
+                             direction, heads_layer)
+        steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
+                               direction, heads_layer)
 
     positions = []
     counts: dict = {}
@@ -959,8 +981,17 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     if attribute_layer is not None:
         attribution = {"layer": int(attribute_layer),
                        "clean": clean["contrib"], "steered": steered["contrib"]}
+    heads = None
+    if heads_layer is not None and clean.get("head_contrib"):
+        import statistics as _st
+        n_heads = len(clean["head_contrib"][0])
+        mean = lambda rows, h: round(_st.mean(r[h] for r in rows), 4)
+        heads = {"layer": int(heads_layer),
+                 "clean_mean": [mean(clean["head_contrib"], h) for h in range(n_heads)],
+                 "steered_mean": [mean(steered["head_contrib"], h) for h in range(n_heads)]}
     return {"baseline_text": base_text,
             "attribution": attribution,
+            "head_attribution": heads,
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
@@ -989,7 +1020,8 @@ async def replay(body: dict):
         out = await asyncio.to_thread(
             _forced_diff, messages, body.get("tools"), body.get("tool_choice"),
             steering, int(body.get("max_tokens") or 256),
-            float(body.get("temperature") or 0), body.get("attribute_layer"))
+            float(body.get("temperature") or 0), body.get("attribute_layer"),
+            body.get("attribute_heads_layer"))
         return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
