@@ -175,3 +175,37 @@ engineering (Zou et al., arXiv:2310.01405) and contrastive activation
 addition (Rimsky et al., arXiv:2312.06681). The layer-depth intuitions in
 the lessons match what those papers report; the over-steering failure modes
 are our own scars.
+## Hotwire interop: one spec dialect, explicit regimes
+
+The canonical steering spec is [hotwire](https://github.com/moudrkat/hotwire-vllm)'s
+— that is the format people deploy with, so brainscope accepts it natively:
+
+```json
+{"id": "calm", "layer": 20, "scale": 3, "decode_only": true}
+```
+
+either as a `steering` object or as the full hotwire wire format
+(`"vllm_xargs": {"hotwire": "<json string>"}`) — a request built for a
+hotwire-vLLM server steers brainscope unchanged. The legacy
+`{"name", "strength", "layer_from", "layer_to"}` dialect still works
+(UI slider, old policy files).
+
+**Regimes are explicit now.** Two per-spec flags say *what* gets steered:
+
+- `decode_only: true` (or `prefill: false`) — steer generated tokens only,
+  never the prompt. This is the regime most vectors are calibrated in;
+  applying such a vector to a long prompt as well multiplies the effective
+  dose and can wreck coherence.
+- `syntax_mute: false` — opt out of the tool-call scaffolding mute
+  (default on: JSON syntax stays well-formed, the persona speaks only
+  inside argument string values).
+
+**Export with a passport:** `python -m brainscope.export_hotwire --dirs
+dirs.json --out ./vectors` writes hotwire-ready `.pt` files plus a
+`manifest.json` recording shape, norms, model, and the calibration regime —
+a vector should never travel without its regime again.
+
+**Parity check:** `python -m brainscope.parity` sends the same prompts and
+spec to a brainscope and a hotwire server and compares the behavior — the
+cheap standing guard against the two backends' steering semantics drifting
+apart.

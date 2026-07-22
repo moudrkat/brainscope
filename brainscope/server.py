@@ -190,7 +190,8 @@ def _dir_row(name: str, i: int) -> torch.Tensor:
 
 
 def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int,
-                         swap_to: str | None = None) -> list:
+                         swap_to: str | None = None, prefill: bool = True,
+                         syntax_mute: bool = True) -> list:
     """Register steering hooks, return handles.
 
     Default: activation addition (h += strength * direction). With `swap_to`,
@@ -208,8 +209,10 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
         b = None if row_to is None else torch.nn.functional.normalize(row_to.float(), dim=0)
 
         def hook(_module, _inp, out):
-            if state.get("steer_mute"):   # inside a tool call: syntax over persona
-                return out
+            if syntax_mute and state.get("steer_mute"):
+                return out                # tool-call scaffolding: syntax over persona
+            if not prefill and state.get("in_prefill"):
+                return out                # decode-only spec: never steer the prompt
             hidden = out[0] if isinstance(out, tuple) else out
             if b is None:
                 hidden = hidden + strength * row.to(hidden.dtype)
@@ -229,6 +232,15 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
             for i in range(max(0, layer_from), layer_to + 1)]
 
 
+def _steer_regime(s: dict) -> dict:
+    """Regime flags for one spec. hotwire's `decode_only` is the canonical
+    way to say "steer generation, never the prompt"; `prefill`/`syntax_mute`
+    are the explicit brainscope knobs (defaults preserve legacy behavior:
+    prompt steered, JSON scaffolding muted)."""
+    return {"prefill": bool(s.get("prefill", not s.get("decode_only", False))),
+            "syntax_mute": bool(s.get("syntax_mute", True))}
+
+
 def _normalize_steer(body) -> list:
     """One steering spec, {"stack": [specs]}, or a bare list — always returns
     a list of effective specs (unknown names and zero strengths drop out).
@@ -237,6 +249,11 @@ def _normalize_steer(body) -> list:
     A spec with {"from": A, "to": B} is a lens-coordinate swap (A's
     coefficient re-emitted along B; strength scales the re-emission,
     default 1)."""
+    if isinstance(body, str):          # hotwire wire format: JSON string
+        try:
+            body = json.loads(body)
+        except json.JSONDecodeError:
+            return []
     if not body:
         return []
     specs = body.get("stack", [body]) if isinstance(body, dict) else body
@@ -247,13 +264,22 @@ def _normalize_steer(body) -> list:
             out.append({"name": frm, "swap_to": to,
                         "strength": float(s.get("strength") or 1.0),
                         "layer_from": int(s.get("layer_from", 0)),
-                        "layer_to": int(s.get("layer_to", -1))})
+                        "layer_to": int(s.get("layer_to", -1)),
+                        **_steer_regime(s)})
             continue
-        name, strength = s.get("name"), float(s.get("strength") or 0)
+        # canonical (hotwire) dialect: {"id", "layer", "scale"[, "decode_only"]}
+        # legacy brainscope dialect: {"name", "strength", "layer_from", "layer_to"}
+        name = s.get("name") or s.get("id")
+        strength = float(s.get("strength", s.get("scale", 0)) or 0)
+        if "layer" in s:
+            lf = lt = int(s["layer"])
+        else:
+            lf = int(s.get("layer_from", 0))
+            lt = int(s.get("layer_to", -1))
         if name and strength != 0 and name in state["directions"]:
             out.append({"name": name, "strength": strength,
-                        "layer_from": int(s.get("layer_from", 0)),
-                        "layer_to": int(s.get("layer_to", -1))})
+                        "layer_from": lf, "layer_to": lt,
+                        **_steer_regime(s)})
     return out
 
 
@@ -264,7 +290,9 @@ def _install_steer_stack(specs: list) -> tuple[list, list]:
     for s in specs:
         handles += _install_steer_hooks(s["name"], s["strength"],
                                         s["layer_from"], s["layer_to"],
-                                        s.get("swap_to"))
+                                        s.get("swap_to"),
+                                        prefill=s.get("prefill", True),
+                                        syntax_mute=s.get("syntax_mute", True))
         lt = min(s["layer_to"] if s["layer_to"] >= 0 else n - 1, n - 1)
         name = f"{s['name']}→{s['swap_to']}" if s.get("swap_to") else s["name"]
         applied.append({"name": name, "from": s["name"], "swap_to": s.get("swap_to"),
@@ -586,6 +614,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # SHORT prompt + viz on: one full forward WITH attentions, so the viz can
     # show real per-head self-attention matrices (cheap when seq is small).
     out = None
+    state["in_prefill"] = True   # decode-only specs skip the prompt forward
     if state["viz"] and ids.shape[1] <= ATTN_MATRIX_MAX:
         out = model(input_ids=ids, past_key_values=past, use_cache=True,
                     output_attentions=True, **logits_kw)
@@ -596,6 +625,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             out = model(input_ids=ids[:, i:i + PREFILL_CHUNK], past_key_values=past,
                         use_cache=True, **logits_kw)
             past = out.past_key_values
+    state["in_prefill"] = False
     if state["device"] == "cuda":
         torch.cuda.empty_cache()   # drop prefill transients before decode
 
@@ -719,6 +749,18 @@ async def chat_completions(body: dict):
     # policy — the app stays steering-agnostic, rules live here.
     tags = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     steering = body.get("steering")
+    if steering is None:
+        # hotwire wire format: the exact request an app sends to a
+        # hotwire-vLLM server works here unchanged.
+        xargs = body.get("vllm_xargs")
+        if isinstance(xargs, dict) and xargs.get("hotwire") is not None:
+            steering = xargs["hotwire"]
+            if isinstance(steering, str):
+                try:
+                    steering = json.loads(steering)
+                except json.JSONDecodeError:
+                    return JSONResponse({"error": "vllm_xargs.hotwire is not valid JSON"},
+                                        status_code=400)
     if steering is None and tags:
         steering = _match_policy(tags)
     if steering is not None:
@@ -727,7 +769,7 @@ async def chat_completions(body: dict):
                                 status_code=400)
         specs = steering.get("stack", [steering]) if isinstance(steering, dict) else steering
         for s in specs if isinstance(specs, list) else []:
-            name = s.get("name")
+            name = s.get("name") or s.get("id")
             if name and name not in state["directions"]:
                 return JSONResponse(
                     {"error": f"unknown direction {name!r}",
