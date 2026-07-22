@@ -244,3 +244,12 @@ def test_forced_replay_steered_shows_direct_effect(client, direction, fitted_len
         assert all(-1.0 <= c <= 1.0 for c in p["cos"])
     finally:
         bs.state["jlens_on"] = False
+
+
+def test_direction_unembed(client, direction):
+    r = client.get("/directions/vec/unembed", params={"layer": 0, "top": 10})
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert len(d["top_up"]) > 0 and len(d["top_down"]) > 0
+    assert d["top_up"] != d["top_down"]
+    assert client.get("/directions/ghost/unembed").status_code == 404

@@ -991,6 +991,24 @@ async def replay_trace(trace_id: str, body: dict):
     return await replay(body)
 
 
+@app.get("/directions/{name}/unembed")
+async def direction_unembed(name: str, layer: int = 0, top: int = 30):
+    """Direct logit attribution of a direction: which tokens does W_U push
+    up (+v) and down (-v) BEFORE any circuit gets involved. Comparing this
+    with what steering actually suppresses splits the vector's effect into
+    direct vs circuit-mediated."""
+    if name not in state["directions"]:
+        return JSONResponse({"error": f"unknown direction {name!r}"}, status_code=404)
+    d = state["directions"][name]
+    row = (d[min(layer, d.shape[0] - 1)] if d.dim() == 2 else d).detach().float()
+    row = row.to(state["device"])
+    up = _topk_readout(row.unsqueeze(0), top)
+    down = _topk_readout((-row).unsqueeze(0), top)
+    return {"name": name, "layer": layer,
+            "top_up": up[0] if up else [],
+            "top_down": down[0] if down else []}
+
+
 @app.get("/v1/models")
 async def models():
     return {"object": "list", "data": [{"id": state["model_name"], "object": "model"}]}
