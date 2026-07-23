@@ -10,6 +10,11 @@ pip install brainscope
 
 **Watch your model think while your app talks to it.**
 
+An OpenAI-compatible chat server over any Hugging Face model with a live
+view into its residual stream — logit/tuned/J-lens readouts, attention, and
+per-request steering. For anyone building on an LLM who wants to *see* what
+the model is doing (and steer it) without leaving their own OpenAI client.
+
 ## ⚡ Run in 30 s (laptop, no GPU)
 
 ```bash
