@@ -349,8 +349,16 @@ def _cmd_fit(args) -> None:
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     tok = AutoTokenizer.from_pretrained(model_id)
     # sdpa attention: fitting needs gradients, not attention weights — take the speed
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=dtype, attn_implementation="sdpa").to(device)
+    kwargs = {"torch_dtype": dtype, "attn_implementation": "sdpa"}
+    if getattr(args, "quantize", None):  # input-grads flow through bnb linears
+        from transformers import BitsAndBytesConfig
+        kwargs["quantization_config"] = (
+            BitsAndBytesConfig(load_in_8bit=True) if args.quantize == "8bit"
+            else BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=dtype))
+        kwargs["device_map"] = device
+    model = AutoModelForCausalLM.from_pretrained(model_id, **kwargs)
+    if not getattr(args, "quantize", None):
+        model = model.to(device)
     texts = _load_texts(args.prompts, args.n_texts)
     hidden = model.config.hidden_size
     if len(texts) * args.repeats < 2 * hidden:
@@ -406,6 +414,7 @@ def main() -> None:
     f.add_argument("--repeats", type=int, default=16, help="probes per text")
     f.add_argument("--max-tokens", type=int, default=128)
     f.add_argument("--device", default=None)
+    f.add_argument("--quantize", choices=["8bit", "4bit"], default=None)
     f.add_argument("--seed", type=int, default=0)
     f.add_argument("--skip-first", type=int, default=SKIP_FIRST_POSITIONS,
                    help="exclude the first N positions from the average "
