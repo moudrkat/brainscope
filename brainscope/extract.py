@@ -20,13 +20,21 @@ from .server import PRESETS
 
 
 @torch.inference_mode()
-def extract(model_name: str, pairs: list[dict], layer: int, device: str | None) -> torch.Tensor:
+def extract(model_name: str, pairs: list[dict], layer: int, device: str | None, quantize: str | None = None) -> torch.Tensor:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16 if dev == "cuda" else torch.float32).to(dev).eval()
+    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32}
+    if quantize:  # same trick as server.load_model: fit big models on 16 GB
+        from transformers import BitsAndBytesConfig
+        kwargs["quantization_config"] = (
+            BitsAndBytesConfig(load_in_8bit=True) if quantize == "8bit"
+            else BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16))
+        kwargs["device_map"] = dev
+    model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs).eval()
+    if not quantize:
+        model = model.to(dev)
 
     def mean_hidden(text: str) -> torch.Tensor:
         ids = tok(text, return_tensors="pt").input_ids.to(dev)
@@ -44,6 +52,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     parser.add_argument("--pairs", type=Path, required=True)
+    parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None)
     parser.add_argument("--layer", type=int, required=True,
                         help="which hidden layer to read (≈40-70%% of depth works well)")
     parser.add_argument("--name", required=True)
@@ -52,7 +61,7 @@ def main() -> None:
     args = parser.parse_args()
 
     pairs = [json.loads(line) for line in args.pairs.read_text().splitlines() if line.strip()]
-    direction = extract(PRESETS.get(args.model, args.model), pairs, args.layer, args.device)
+    direction = extract(PRESETS.get(args.model, args.model), pairs, args.layer, args.device, args.quantize)
 
     existing = json.loads(args.out.read_text()) if args.out.exists() else {}
     existing[args.name] = [round(x, 6) for x in direction.tolist()]
