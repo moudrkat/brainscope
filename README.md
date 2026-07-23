@@ -1,5 +1,11 @@
 # brainscope
 
+[![PyPI](https://img.shields.io/pypi/v/brainscope)](https://pypi.org/project/brainscope/)
+
+```
+pip install brainscope
+```
+
 [![CI](https://github.com/moudrkat/brainscope/actions/workflows/ci.yml/badge.svg)](https://github.com/moudrkat/brainscope/actions/workflows/ci.yml)
 
 **Watch your model think while your app talks to it.**
