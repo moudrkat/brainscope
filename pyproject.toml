@@ -1,6 +1,6 @@
 [project]
 name = "brainscope"
-version = "0.1.0"
+version = "0.1.1"
 description = "Watch your model think while your app talks to it"
 readme = "README.md"
 license = {text = "MIT"}
@@ -21,7 +21,7 @@ brainscope-jlens = "brainscope.jlens:main"
 packages = ["brainscope"]
 
 [tool.setuptools.package-data]
-brainscope = ["static/*"]
+brainscope = ["static/*", "AGENTS.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

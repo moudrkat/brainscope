@@ -1763,8 +1763,15 @@ async def ws(websocket: WebSocket):
         state["clients"].discard(websocket)
 
 
+def _print_guide():
+    from importlib.resources import files
+    print((files("brainscope") / "AGENTS.md").read_text())
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--guide", action="store_true",
+                        help="print the agent/usage guide and exit")
     parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B-Instruct")
     parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--host", default="0.0.0.0")
@@ -1797,6 +1804,8 @@ def main() -> None:
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    if args.guide:
+        _print_guide(); return
 
     model_id = PRESETS.get(args.model, args.model)
     print(f"brainscope: loading {model_id} …")
