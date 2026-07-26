@@ -191,18 +191,28 @@ def _dir_row(name: str, i: int) -> torch.Tensor:
 
 def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int,
                          swap_to: str | None = None, prefill: bool = True,
-                         syntax_mute: bool = True) -> list:
+                         syntax_mute: bool = True, gate: float | None = None,
+                         answer_only: bool = False) -> list:
     """Register steering hooks, return handles.
 
     Default: activation addition (h += strength * direction). With `swap_to`,
     a LENS-COORDINATE SWAP instead (Gurnee et al. 2026): the activation's
     coefficient along direction `name` is removed and re-emitted along
-    `swap_to` — h' = h − (h·â)â + strength·(h·â)b̂ — exchanging one concept
-    for another instead of blindly adding energy.
+    `swap_to` — h' = h − (h·â)â + strength·(h·â)b̂.
 
-    A direction is either one vector [hidden] applied to every steered layer,
-    or a per-layer matrix [n_layers, hidden] (e.g. a hidden-directions dict
-    entry) where each steered layer gets its own row."""
+    With `gate` (a threshold): PROBE-GATED CONDITIONAL steering — the direction
+    is its own probe. Steering is applied ONLY at positions where the
+    activation's projection onto the direction, coef = h·â, exceeds `gate`.
+    Where the behavior is not forming (coef ≤ gate) the activation is left
+    untouched, so coherent generations pay no steering tax — decoupling
+    suppression from the collateral damage a constant push inflicts everywhere
+    (steering-mechanics FINDINGS: additive steering couples suppression and
+    breakage). Orient the direction so coef is HIGH when the behavior is
+    present (confirm with the sign-probe); calibrate `gate` on held-out
+    behavior-present vs -absent activations.
+
+    A direction is one vector [hidden] applied to every steered layer, or a
+    per-layer matrix [n_layers, hidden] where each steered layer gets its row."""
 
     def make_hook(row, row_to=None):
         a = torch.nn.functional.normalize(row.float(), dim=0)
@@ -213,8 +223,16 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
                 return out                # tool-call scaffolding: syntax over persona
             if not prefill and state.get("in_prefill"):
                 return out                # decode-only spec: never steer the prompt
+            if answer_only and state.get("in_think"):
+                return out                # thinking model: never steer the <think> block —
+                                          # steer only the answer after </think>. Corrupting
+                                          # mid-reasoning collapses thinking models (echo/loop).
             hidden = out[0] if isinstance(out, tuple) else out
-            if b is None:
+            if gate is not None:          # probe-gated: steer only where behavior forms
+                coef = hidden.float() @ a                       # [batch, seq]
+                mask = (coef > gate).to(hidden.dtype).unsqueeze(-1)
+                hidden = hidden + mask * (strength * row.to(hidden.dtype))
+            elif b is None:
                 hidden = hidden + strength * row.to(hidden.dtype)
             else:
                 h = hidden.float()
@@ -267,9 +285,26 @@ def _normalize_steer(body) -> list:
                         "layer_to": int(s.get("layer_to", -1)),
                         **_steer_regime(s)})
             continue
+        # ablation dialect: {"id"/"name", "ablate": true[, "keep": k]} —
+        # project the direction OUT of the stream: h' = h − (1−k)(h·â)â.
+        # Bounded by construction: removes only the component actually present
+        # (no additive dose ⇒ no overdose cliff, context-length-proportional).
+        # k=0 (default) = full removal. Implemented as the degenerate lens
+        # swap (swap_to = itself, strength = k ⇒ h − (h·â)â + k(h·â)â).
+        name = s.get("name") or s.get("id")
+        if s.get("ablate") and name in state["directions"]:
+            if "layer" in s:
+                lf = lt = int(s["layer"])
+            else:
+                lf = int(s.get("layer_from", 0))
+                lt = int(s.get("layer_to", -1))
+            out.append({"name": name, "swap_to": name,
+                        "strength": float(s.get("keep", 0.0)),
+                        "layer_from": lf, "layer_to": lt,
+                        **_steer_regime(s)})
+            continue
         # canonical (hotwire) dialect: {"id", "layer", "scale"[, "decode_only"]}
         # legacy brainscope dialect: {"name", "strength", "layer_from", "layer_to"}
-        name = s.get("name") or s.get("id")
         strength = float(s.get("strength", s.get("scale", 0)) or 0)
         if "layer" in s:
             lf = lt = int(s["layer"])
@@ -277,9 +312,13 @@ def _normalize_steer(body) -> list:
             lf = int(s.get("layer_from", 0))
             lt = int(s.get("layer_to", -1))
         if name and strength != 0 and name in state["directions"]:
-            out.append({"name": name, "strength": strength,
-                        "layer_from": lf, "layer_to": lt,
-                        **_steer_regime(s)})
+            spec = {"name": name, "strength": strength,
+                    "layer_from": lf, "layer_to": lt, **_steer_regime(s)}
+            if s.get("gate") is not None:   # probe-gated conditional steering
+                spec["gate"] = float(s["gate"])
+            if s.get("answer_only"):        # thinking model: skip the <think> block
+                spec["answer_only"] = True
+            out.append(spec)
     return out
 
 
@@ -292,9 +331,16 @@ def _install_steer_stack(specs: list) -> tuple[list, list]:
                                         s["layer_from"], s["layer_to"],
                                         s.get("swap_to"),
                                         prefill=s.get("prefill", True),
-                                        syntax_mute=s.get("syntax_mute", True))
+                                        syntax_mute=s.get("syntax_mute", True),
+                                        gate=s.get("gate"),
+                                        answer_only=s.get("answer_only", False))
         lt = min(s["layer_to"] if s["layer_to"] >= 0 else n - 1, n - 1)
-        name = f"{s['name']}→{s['swap_to']}" if s.get("swap_to") else s["name"]
+        if s.get("swap_to") == s["name"]:
+            name = f"ablate:{s['name']}(keep={s['strength']})"
+        elif s.get("swap_to"):
+            name = f"{s['name']}→{s['swap_to']}"
+        else:
+            name = s["name"]
         applied.append({"name": name, "from": s["name"], "swap_to": s.get("swap_to"),
                         "strength": s["strength"],
                         "layers": [max(0, s["layer_from"]), lt]})
@@ -563,6 +609,13 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # the opening of a tool call in the model's own format, so the only way to
     # continue is to finish one ("required" picks the tool, a named choice
     # forces it). The prefix is prepended back before parsing the tool call.
+    # after_think: on a THINKING model, forcing the tool from token 0 seeds the
+    # tool-call opening into the prompt → the model can't emit <think> first, so
+    # its reasoning is suppressed. With tool_choice={"...", "after_think": true}
+    # we let the model reason freely, then inject the forced prefix right after
+    # </think> (below, in the decode loop) so the structured tool call (e.g.
+    # SuggestMessages) is still guaranteed — reason first, THEN the buttons.
+    after_think = isinstance(tool_choice, dict) and tool_choice.get("after_think")
     forced_prefix = ""
     if tools and tool_choice and tool_choice not in ("none", "auto"):
         forced = tool_choice.get("function", {}).get("name") \
@@ -575,10 +628,14 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             # the opening brace keeps arguments a JSON object (bare values
             # like `"arguments": 3 * 7` would break the parse)
             forced_prefix += f"\"{forced}\", \"arguments\": {{"
-        prompt += forced_prefix
+        if not after_think:
+            prompt += forced_prefix     # seed now (non-thinking / force-from-start)
+        # after_think: hold the prefix; inject it post-</think> in the loop
+    inject_after_think = forced_prefix if after_think else ""
 
     scan = _tool_scan_new()
-    _tool_scan(scan, forced_prefix)
+    if not after_think:              # after_think: no tool syntax emitted yet
+        _tool_scan(scan, forced_prefix)
     state["steer_mute"] = not scan["speak"]
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
     past, generated = None, []
@@ -631,7 +688,16 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     if state["device"] == "cuda":
         torch.cuda.empty_cache()   # drop prefill transients before decode
 
+    # answer_only steering: track whether we're still inside the <think> block so
+    # the hook can skip steering during reasoning. Thinking models open with
+    # <think> (often template-injected before decode); we're "in think" until
+    # </think> has been generated. If no think block ever appears, in_think stays
+    # False and steering behaves normally.
+    state["in_think"] = any((s or {}).get("answer_only") for s in (active_steer or [])) \
+        and "</think>" not in "".join(gen["all_tokens"])
     for step in range(max_new_tokens):
+        if state.get("in_think") and "</think>" in "".join(gen["all_tokens"]):
+            state["in_think"] = False    # reasoning finished → steer the answer now
         if step:
             # hidden states/attentions only for DECODE steps — prefill signals
             # of a 20k prompt would eat gigabytes, we only visualize the answer.
@@ -687,8 +753,21 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
         if int(next_id) == tok.eos_token_id or state.get("stop"):
             break
+        # think-then-tool: once reasoning closes, inject the forced tool-call
+        # opening so the model MUST complete the structured call (e.g.
+        # SuggestMessages) — reasoning preserved, buttons guaranteed.
+        if inject_after_think and "</think>" in "".join(gen["all_tokens"]):
+            fp_ids = tok(inject_after_think, return_tensors="pt",
+                         add_special_tokens=False).input_ids.to(state["device"])
+            out = model(input_ids=fp_ids, past_key_values=past, use_cache=True, **logits_kw)
+            past = out.past_key_values
+            generated.extend(fp_ids[0].tolist())
+            ids = torch.cat([ids, fp_ids], dim=1)
+            _tool_scan(scan, inject_after_think)   # now inside the tool call
+            state["in_think"] = False              # answer_only: steer from here
+            inject_after_think = ""                # once only
 
-    text = forced_prefix + tok.decode(generated, skip_special_tokens=False)
+    text = ("" if after_think else forced_prefix) + tok.decode(generated, skip_special_tokens=False)
     gen["done"] = True
     state["steer_mute"] = False
     trace_id = None
