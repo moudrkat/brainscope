@@ -321,6 +321,63 @@ def test_forced_diff_kl_divergence(client, direction):
     assert big["kl"]["mean"] > z["kl"]["mean"], "strong steering => larger KL"
 
 
+def test_row_divergence_identical_and_disjoint():
+    """The rerouting metric's two fixed points: identical rows read 0/0,
+    fully re-routed one-hot rows read JSD 1 with the whole focus mass gone."""
+    row = torch.softmax(torch.randn(4, 8), dim=-1)
+    jsd, delta = bs._row_divergence(row, row.clone())
+    assert torch.allclose(jsd, torch.zeros(4), atol=1e-5)
+    assert torch.allclose(delta, torch.zeros(4), atol=1e-5)
+    a, b = torch.zeros(4, 8), torch.zeros(4, 8)
+    a[:, 0], b[:, 7] = 1.0, 1.0
+    jsd, delta = bs._row_divergence(a, b)
+    assert torch.allclose(jsd, torch.ones(4), atol=1e-4)
+    assert torch.allclose(delta, -torch.ones(4), atol=1e-4)
+
+
+def test_forced_replay_attn_divergence_off_by_default(client, direction):
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "forced": True, "max_tokens": 5})
+    assert r.status_code == 200, r.text
+    assert r.json()["attn_divergence"] is None
+
+
+def test_forced_replay_attn_divergence_zero_strength_is_zero(client, direction):
+    """Strength ~0 ⇒ both passes are the same computation ⇒ every watched
+    head's attention pattern is identical: JSD ~0, focus mass unchanged."""
+    r = client.post("/replay", json={
+        "messages": [{"role": "user", "content": "Say a few words."}],
+        "steering": {"id": "vec", "layer": 1, "scale": 1e-9},
+        "forced": True, "max_tokens": 6, "attn_divergence": True})
+    assert r.status_code == 200, r.text
+    d = r.json()["attn_divergence"]
+    assert d["layers"] == [1, 2, 3]          # default: injection layer onward
+    assert all(abs(v) < 1e-3 for hs in d["jsd_mean"] for v in hs)
+    assert all(abs(v) < 1e-3 for hs in d["focus_mass_delta"] for v in hs)
+
+
+def test_forced_replay_attn_divergence_strong_steering(client, direction):
+    msgs = [{"role": "user", "content": "Say a few words."}]
+    z = client.post("/replay", json={
+        "messages": msgs, "steering": {"id": "vec", "layer": 1, "scale": 1e-9},
+        "forced": True, "max_tokens": 6, "attn_divergence": True,
+        "attn_layers": [2, 3]}).json()["attn_divergence"]
+    big = client.post("/replay", json={
+        "messages": msgs, "steering": {"id": "vec", "layer": 1, "scale": 60.0},
+        "forced": True, "max_tokens": 6, "attn_divergence": True,
+        "attn_layers": [2, 3]}).json()["attn_divergence"]
+    assert big["layers"] == [2, 3] and big["n_heads"] == 4   # tiny model heads
+    assert len(big["jsd_mean"]) == len(big["focus_mass_delta"]) == 2
+    assert len(big["jsd_by_position"]) == big["n_positions"] > 0
+    assert all(0.0 <= v <= 1.0 for hs in big["jsd_mean"] for v in hs)
+    assert all(-1.0 <= v <= 1.0 for hs in big["focus_mass_delta"] for v in hs)
+    assert big["max"]["layer"] in (2, 3) and 0 <= big["max"]["head"] < 4
+    zmax = max(v for hs in z["jsd_mean"] for v in hs)
+    assert big["max"]["jsd"] > zmax, "huge vector must re-route some head"
+
+
 def test_forced_diff_clean_cache_reuse(client, direction, monkeypatch):
     """Second forced diff on the same prompt with a different scale must NOT
     regenerate the baseline — the clean side is cached."""
