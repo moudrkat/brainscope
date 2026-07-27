@@ -40,7 +40,11 @@ view into the residual stream. What it does:
   streams per-token, per-layer activity into the browser — logit lens,
   attention, and where each word's prediction settled.
 - **Steer behaviour live** — extract a direction from contrast pairs and
-  drive it from a slider, per request, or by a tag-matched policy. Speaks
+  drive it from a slider, per request, or by a tag-matched policy.
+- **Watch steering reroute attention** — the forced replay can report
+  per-head attention divergence between clean and steered passes (JSD +
+  focus-mass delta, the rerouting signature from arXiv 2605.06342): pass
+  `"attn_divergence": true` on `/replay` with `forced: true`. Speaks
   [hotwire-vllm](https://github.com/moudrkat/hotwire-vllm)'s steering spec
   (`{"id", "layer", "scale", "decode_only"}`, incl. the `vllm_xargs` wire
   format) — **calibrate here, deploy there**: `python -m
