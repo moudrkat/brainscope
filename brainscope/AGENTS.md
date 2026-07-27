@@ -31,6 +31,12 @@ prefill is a much larger dose.
 - `POST /replay {"messages": [...], "steering": {...}, "forced": true, "kl": true}`
   — teacher-forced clean-vs-steered diff: per-layer cosine with the direction,
   KL, and (with a fitted lens) which "forming words" the vector suppressed.
+- Add `"attn_divergence": true` to the forced diff for the rerouting monitor:
+  per-(layer, head) Jensen–Shannon divergence between the clean and steered
+  attention patterns, plus the mass change on each head's focus set (the
+  tokens carrying 0.8 of clean attention). `"attn_layers": [ints]` picks the
+  watched layers (default: injection layer onward, capped at 8). Off by
+  default — attention capture costs memory.
 - `GET /directions` — list loaded directions. `POST /steer` — set a global
   steering state instead of per-request.
 - `GET /info` — model + config.
