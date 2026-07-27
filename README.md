@@ -15,6 +15,13 @@ view into its residual stream — logit/tuned/J-lens readouts, attention, and
 per-request steering. For anyone building on an LLM who wants to *see* what
 the model is doing (and steer it) without leaving their own OpenAI client.
 
+> **Status: instrument.** brainscope is a measuring device — it makes a
+> model's internals observable and steerable; it claims no scientific
+> findings of its own. The experiments that use it are work in progress
+> (small N, not enough statistics yet) and live in
+> [steering-mechanics](https://github.com/moudrkat/steering-mechanics)
+> and the other lab repos.
+
 ## ⚡ Run in 30 s (laptop, no GPU)
 
 ```bash
