@@ -79,6 +79,11 @@ PREFILL_CHUNK = 128
 # attention captured for the matrix viz — "peek into the model". Longer prompts
 # skip it (a 20k-token seq×seq×heads matrix would be gigabytes).
 ATTN_MATRIX_MAX = int(os.getenv("ATTN_MATRIX_MAX", "160"))
+# rerouting monitor (forced diff attn_divergence): at most this many layers get
+# their per-head attention rows retained between the clean and steered pass —
+# each kept layer costs heads × positions × seq fp16 on CPU, so a big model's
+# full depth would be hundreds of MB per cached prompt.
+ATTN_DIV_MAX_LAYERS = int(os.getenv("ATTN_DIV_MAX_LAYERS", "8"))
 
 # Tool-call output formats differ per model family; try each in order.
 TOOL_CALL_PATTERNS = [
@@ -926,13 +931,43 @@ def _replay(messages, tools, tool_choice, steering, max_tokens, temperature) -> 
     return result
 
 
+def _row_divergence(clean, steered, threshold: float = 0.8):
+    """Compare one position's per-head attention rows between the clean and
+    the steered forced pass (identical tokens ⇒ same row length).
+
+    clean, steered: [heads, seq]. Returns (jsd, focus_delta), both [heads]:
+    base-2 Jensen–Shannon divergence (0 = identical patterns, 1 = disjoint),
+    and the change in mass on the clean FOCUS SET — the minimal token set
+    covering `threshold` of clean attention. A negative focus_delta means
+    steering moved attention away from the tokens the clean model looked at:
+    the rerouting signature (SKOP, arXiv 2605.06342)."""
+    p, q = clean.float(), steered.float()
+    m = 0.5 * (p + q)
+    jsd = 0.5 * (p * ((p + 1e-12) / (m + 1e-12)).log()).sum(-1) \
+        + 0.5 * (q * ((q + 1e-12) / (m + 1e-12)).log()).sum(-1)
+    jsd = (jsd / math.log(2)).clamp(0.0, 1.0)
+    srt, idx = p.sort(-1, descending=True)
+    keep = (srt.cumsum(-1) - srt) < threshold      # minimal covering set
+    focus_clean = (srt * keep).sum(-1)
+    focus_steered = (q.gather(-1, idx) * keep).sum(-1)
+    return jsd, focus_steered - focus_clean
+
+
 def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
-                 attr_direction=None, heads_layer=None, capture_logprobs=False) -> dict:
+                 attr_direction=None, heads_layer=None, capture_logprobs=False,
+                 attn_layers=None, attn_ref=None) -> dict:
     """Teacher-forced pass: drive the model through EXACT given tokens,
     token by token — same regime as real decode (prefill flag, tool-scan
     mute) — capturing per-position layer stacks. With identical tokens in
     an unsteered and a steered pass, any readout difference at a position
-    is the vector's direct effect: no trajectory divergence."""
+    is the vector's direct effect: no trajectory divergence.
+
+    Rerouting monitor: with `attn_layers`, per-head attention rows of those
+    layers are captured too. The CLEAN pass retains its rows (fp16, CPU —
+    the cost is why the layer set is capped, see ATTN_DIV_MAX_LAYERS); the
+    STEERED pass gets them back as `attn_ref` and folds each position into
+    JS divergence + focus-mass delta on the fly, so steered rows are never
+    retained — one layer's [heads, seq] row lives only for the comparison."""
     tok, model = state["tokenizer"], state["model"]
     specs = _normalize_steer(steering) if steering else []
     handles = []
@@ -942,6 +977,9 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
     stacks = []
     preds = []
     logprobs = []
+    attn_rows = {L: [] for L in (attn_layers or [])}   # clean pass: kept for the diff
+    attn_div = {L: {"jsd": [], "delta": []} for L in (attn_layers or [])} \
+        if attn_ref is not None else None              # steered pass: folded per step
     contrib = {"attn": [], "mlp": []}
     attr_handles = []
     if attribute_layer is not None and attr_direction is not None:
@@ -995,9 +1033,18 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
                 _tool_scan(scan, piece)
                 state["steer_mute"] = not scan["speak"]
                 out = model(input_ids=forced_ids[:, j:j + 1], past_key_values=past,
-                            use_cache=True, output_hidden_states=True)
+                            use_cache=True, output_hidden_states=True,
+                            output_attentions=bool(attn_layers))
                 past = out.past_key_values
                 stacks.append(_stack_last(out.hidden_states).to(torch.float32).cpu())
+                for L in (attn_layers or []):
+                    row = out.attentions[L][0, :, -1, :].cpu()   # [heads, seq]
+                    if attn_ref is None:
+                        attn_rows[L].append(row.to(torch.float16))
+                    else:
+                        jsd, delta = _row_divergence(attn_ref[L][j], row)
+                        attn_div[L]["jsd"].append(jsd)
+                        attn_div[L]["delta"].append(delta)
                 lg = out.logits[0, -1]
                 preds.append(int(lg.argmax()))
                 if capture_logprobs:
@@ -1010,7 +1057,8 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
         state["in_prefill"] = False
         state["steer_mute"] = False
     return {"stacks": stacks, "preds": preds, "logprobs": logprobs,
-            "contrib": contrib, "head_contrib": head_contrib}
+            "contrib": contrib, "head_contrib": head_contrib,
+            "attn_rows": attn_rows, "attn_div": attn_div}
 
 
 def _patch_pass(prompt_ids, forced_ids, patch_layer, patch_pos, patch_vec) -> list:
@@ -1068,19 +1116,21 @@ _CLEAN_CACHE_MAX = 16
 
 
 def _clean_key(messages, tools, tool_choice, max_tokens, attribute_layer,
-               heads_layer, want_kl, direction_name):
+               heads_layer, want_kl, direction_name, attn_layers=None):
     import hashlib
     blob = json.dumps([messages, tools, tool_choice, max_tokens,
                        attribute_layer, heads_layer, want_kl,
                        direction_name if (attribute_layer is not None
-                                          or heads_layer is not None) else None],
+                                          or heads_layer is not None) else None,
+                       attn_layers],
                       sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature,
                  attribute_layer=None, heads_layer=None, patch_layer=None,
-                 patch_positions=None, kl=False) -> dict:
+                 patch_positions=None, kl=False, attn_divergence=False,
+                 attn_layers=None) -> dict:
     """Baseline generation, then two teacher-forced passes over its exact
     tokens (unsteered vs steered). Position-aligned by construction.
 
@@ -1098,14 +1148,30 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     specs = _normalize_steer(steering)
     direction = state["directions"][specs[0]["name"]] if specs else None
     want_kl = bool(kl)
+    alayers = None
+    if attn_divergence:
+        # rerouting monitor layer set. Default: injection layer onward (capped)
+        # — steering perturbs the layer's OUTPUT, so its own attention (already
+        # computed) stays clean and reads ~0, a built-in control; rerouting
+        # shows up in the layers downstream, whose queries and keys are built
+        # from the perturbed residual.
+        n_layers = len(_decoder_layers(state["model"]))
+        if attn_layers:
+            alayers = sorted({int(l) for l in attn_layers if 0 <= int(l) < n_layers})
+        else:
+            inj = specs[0]["layer_from"] if specs else 0
+            alayers = list(range(max(0, inj), n_layers))
+        alayers = alayers[:ATTN_DIV_MAX_LAYERS] or None
     ck = _clean_key(messages, tools, tool_choice, max_tokens, attribute_layer,
-                    heads_layer, want_kl, specs[0]["name"] if specs else None)
+                    heads_layer, want_kl, specs[0]["name"] if specs else None,
+                    alayers)
     cached = _CLEAN_CACHE.get(ck)
     if cached is not None:
         base_text, forced_ids, prompt_ids, clean = cached
         with _GEN_LOCK:
             steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
-                                   direction, heads_layer, want_kl)
+                                   direction, heads_layer, want_kl, alayers,
+                                   clean["attn_rows"] if alayers else None)
     else:
         base_text = generate_with_signals(messages, tools, max_tokens, temperature,
                                           notify, None, None, tool_choice)
@@ -1116,9 +1182,10 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
                          add_special_tokens=False).input_ids.to(state["device"])
         with _GEN_LOCK:
             clean = _forced_pass(prompt_ids, forced_ids, None, attribute_layer,
-                                 direction, heads_layer, want_kl)
+                                 direction, heads_layer, want_kl, alayers)
             steered = _forced_pass(prompt_ids, forced_ids, steering, attribute_layer,
-                                   direction, heads_layer, want_kl)
+                                   direction, heads_layer, want_kl, alayers,
+                                   clean["attn_rows"] if alayers else None)
         if len(_CLEAN_CACHE) >= _CLEAN_CACHE_MAX:
             _CLEAN_CACHE.pop(next(iter(_CLEAN_CACHE)))
         _CLEAN_CACHE[ck] = (base_text, forced_ids, prompt_ids, clean)
@@ -1203,11 +1270,35 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
         import statistics as _st
         kl_stats = {"mean": round(_st.mean(kls), 5),
                     "max": round(max(kls), 5), "n": n}
+    attn_div = None
+    div = steered.get("attn_div")
+    if alayers and div and div[alayers[0]]["jsd"]:
+        jsd_mean, delta_mean, by_pos = [], [], None
+        peak = {"layer": None, "head": None, "jsd": -1.0}
+        for L in alayers:
+            J = torch.stack(div[L]["jsd"])          # [positions, heads]
+            D = torch.stack(div[L]["delta"])
+            jm = J.mean(0)
+            jsd_mean.append([round(float(x), 4) for x in jm])
+            delta_mean.append([round(float(x), 4) for x in D.mean(0)])
+            h = int(jm.argmax())
+            if float(jm[h]) > peak["jsd"]:
+                peak = {"layer": L, "head": h, "jsd": round(float(jm[h]), 4)}
+            pos = J.mean(1)                          # heads folded, per position
+            by_pos = pos if by_pos is None else by_pos + pos
+        attn_div = {"layers": alayers, "n_heads": len(jsd_mean[0]),
+                    "n_positions": int(by_pos.shape[0]), "focus_threshold": 0.8,
+                    "jsd_mean": jsd_mean,            # [len(layers)][heads]
+                    "focus_mass_delta": delta_mean,  # [len(layers)][heads]
+                    "jsd_by_position": [round(float(x) / len(alayers), 4)
+                                        for x in by_pos],
+                    "max": peak}
     return {"baseline_text": base_text,
             "attribution": attribution,
             "head_attribution": heads,
             "patching": patching,
             "kl": kl_stats,
+            "attn_divergence": attn_div,
             "tokens": pieces,
             "positions": positions,
             "suppressed_positional": [
@@ -1221,7 +1312,13 @@ async def replay(body: dict):
     """A/B a conversation: {"messages": [...], "steering": <spec>} ->
     baseline + steered texts, trace ids, and per-layer |cos| of the steered
     generation against the steering direction — the one-call answer to
-    "what did the vector actually do here"."""
+    "what did the vector actually do here".
+
+    With {"forced": true, "attn_divergence": true} the forced diff also
+    reports per-(layer, head) attention divergence between the clean and the
+    steered pass (rerouting monitor); "attn_layers": [ints] narrows or moves
+    the watched layer set (default: injection layer onward, capped — attention
+    capture costs memory, so it stays off unless asked)."""
     messages = body.get("messages")
     steering = body.get("steering")
     if not messages or steering is None:
@@ -1240,7 +1337,8 @@ async def replay(body: dict):
             steering, int(body.get("max_tokens") or 256),
             float(body.get("temperature") or 0), body.get("attribute_layer"),
             body.get("attribute_heads_layer"), body.get("patch_layer"),
-            body.get("patch_positions"), body.get("kl"))
+            body.get("patch_positions"), body.get("kl"),
+            body.get("attn_divergence"), body.get("attn_layers"))
         return JSONResponse(out)
     out = await asyncio.to_thread(
         _replay, messages, body.get("tools"), body.get("tool_choice"), steering,
