@@ -978,7 +978,7 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
     preds = []
     logprobs = []
     attn_rows = {L: [] for L in (attn_layers or [])}   # clean pass: kept for the diff
-    attn_div = {L: {"jsd": [], "delta": []} for L in (attn_layers or [])} \
+    attn_div = {L: {"jsd": [], "delta": [], "ent": [], "sink": []} for L in (attn_layers or [])} \
         if attn_ref is not None else None              # steered pass: folded per step
     contrib = {"attn": [], "mlp": []}
     attr_handles = []
@@ -1045,6 +1045,11 @@ def _forced_pass(prompt_ids, forced_ids, steering, attribute_layer=None,
                         jsd, delta = _row_divergence(attn_ref[L][j], row)
                         attn_div[L]["jsd"].append(jsd)
                         attn_div[L]["delta"].append(delta)
+                        ref = attn_ref[L][j].float()
+                        p = ref.clamp_min(1e-12)
+                        attn_div[L]["ent"].append(
+                            -(p * p.log()).sum(-1) / max(math.log(ref.shape[-1]), 1e-9))
+                        attn_div[L]["sink"].append(row.float()[:, 0] - ref[:, 0])
                 lg = out.logits[0, -1]
                 preds.append(int(lg.argmax()))
                 if capture_logprobs:
@@ -1141,6 +1146,14 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     trial — roughly a 3x speedup on repeated prompts.
     """
     notify = lambda payload: None
+    # A live GLOBAL steer (the viz slider) would contaminate the clean pass,
+    # the baseline, and the per-prompt clean cache — the forced diff turns it
+    # OFF (re-enable the slider afterwards if you were using it).
+    if state["steer_handles"]:
+        for _h in state["steer_handles"]:
+            _h.remove()
+        state["steer_handles"] = []
+        state["steer"] = None
     tok = state["tokenizer"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False,
@@ -1273,7 +1286,7 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
     attn_div = None
     div = steered.get("attn_div")
     if alayers and div and div[alayers[0]]["jsd"]:
-        jsd_mean, delta_mean, by_pos = [], [], None
+        jsd_mean, delta_mean, ent_mean, sink_mean, by_pos = [], [], [], [], None
         peak = {"layer": None, "head": None, "jsd": -1.0}
         for L in alayers:
             J = torch.stack(div[L]["jsd"])          # [positions, heads]
@@ -1281,6 +1294,8 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
             jm = J.mean(0)
             jsd_mean.append([round(float(x), 4) for x in jm])
             delta_mean.append([round(float(x), 4) for x in D.mean(0)])
+            ent_mean.append([round(float(x), 4) for x in torch.stack(div[L]["ent"]).mean(0)])
+            sink_mean.append([round(float(x), 4) for x in torch.stack(div[L]["sink"]).mean(0)])
             h = int(jm.argmax())
             if float(jm[h]) > peak["jsd"]:
                 peak = {"layer": L, "head": h, "jsd": round(float(jm[h]), 4)}
@@ -1290,6 +1305,8 @@ def _forced_diff(messages, tools, tool_choice, steering, max_tokens, temperature
                     "n_positions": int(by_pos.shape[0]), "focus_threshold": 0.8,
                     "jsd_mean": jsd_mean,            # [len(layers)][heads]
                     "focus_mass_delta": delta_mean,  # [len(layers)][heads]
+                    "clean_entropy_mean": ent_mean,  # [len(layers)][heads], normalized 0-1
+                    "sink_mass_delta": sink_mean,    # [len(layers)][heads], steered-clean at pos 0
                     "jsd_by_position": [round(float(x) / len(alayers), 4)
                                         for x in by_pos],
                     "max": peak}

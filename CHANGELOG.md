@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 (2026-07-28)
+
+- **Forced diff now disables a live global steer** before running: a global
+  `/steer` state would otherwise contaminate the clean pass, the baseline,
+  and the per-prompt clean-side cache (which is keyed without steering
+  state). Re-enable the slider after a replay if you were using it.
+- Rerouting monitor: two new per-(layer, head) fields on the forced diff —
+  `clean_entropy_mean` (normalized clean-row attention entropy, for
+  separating "sharp heads flip easily" from genuine rerouting) and
+  `sink_mass_delta` (attention-mass change on position 0, for catching
+  sink-attraction artifacts).
+
 ## 0.2.0 (2026-07-28)
 
 - **Rerouting monitor** on the forced diff: `/replay` with
