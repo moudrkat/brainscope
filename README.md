@@ -52,6 +52,18 @@ view into the residual stream. What it does:
   per-head attention divergence between clean and steered passes (JSD +
   focus-mass delta, the rerouting signature from arXiv 2605.06342): pass
   `"attn_divergence": true` on `/replay` with `forced: true`.
+- **Screen every token for ~free — activation probes** — the pattern
+  frontier labs deployed on their production traffic in 2026 (a linear
+  probe on activations screens everything, expensive checks run only on
+  hits), reproducible at home: `POST /probes` arms per-token scalar
+  readouts of the residual stream against your extracted directions.
+  Probes stay alive even with the visualization off, and a probe with a
+  `threshold` and `"trip": "viz"` flips the full instruments on the
+  moment it fires. Train your own with one request — `POST /probes/train`
+  generates contrast answers, extracts the direction and reports holdout
+  AUC so you know whether your meter measures signal or noise. Worked
+  example with a banking-style validation note: the slop-o-meter
+  ([docs/slopometer.md](docs/slopometer.md)).
 - **Watch words surface before they're written** — a
   [J-lens](#j-lens-reading-ahead-of-the-output) (Jacobian lens, Anthropic
   2026) readout next to the logit lens: words represented and pushed toward

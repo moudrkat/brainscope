@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.2 (2026-07-30)
+
+- **Probe factory** (`POST /probes/train`): train your own probe from two
+  contrast personas — the server generates the answers, extracts the
+  diff-of-means direction from their activations, reports holdout AUC and
+  a calibrated threshold, and optionally arms the probe. No sklearn, no
+  external scripts.
+- `/demo`: a light-themed stand-in chat app (system prompt + steering
+  controls) served same-origin — poke at behaviors without wiring your
+  real application. Optional deploy-local `avatar.png` (gitignored).
+- `/gen` now returns the probe series; `_persist_directions` demotes a
+  read-only dirs.json to a warning instead of a 500.
+
+- **Cheap activation probes** (`POST /probes`, `GET /probes`, `--probes`):
+  per-token scalar readouts (`h·v̂` or cosine) of one decoder layer's output
+  residual against a loaded direction, computed by a forward hook — so they
+  run even in dark mode (viz off) at ~zero cost. Optional signed
+  `threshold` marks tokens as `fired`; `"trip": "viz"` turns the full
+  capture on the moment a probe first fires (the probe → deep-dive cascade
+  production monitors converged on). Score series is streamed on the
+  websocket (`"probe"` per token) and persisted in traces (`"probe"` key).
+
 ## 0.2.1 (2026-07-28)
 
 - **Forced diff now disables a live global steer** before running: a global

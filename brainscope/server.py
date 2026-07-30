@@ -55,6 +55,10 @@ app = FastAPI(title="brainscope")
 state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {}, "clients": set(),
                "loop": None, "device": "cpu", "model_name": "",
                "steer": None, "steer_handles": [], "policy": [], "policy_on": True,
+               # cheap activation probes (POST /probes): read-only scalar
+               # readouts h·v̂ against loaded directions, alive even with viz off
+               "vprobes": [], "vprobes_on": True, "vprobe_handles": [],
+               "vprobe_scores": {},
                "gen": None, "probes": {"attn": {}, "mlp": {}}, "lens": False,
                # tuned lens (Belrose et al. 2023) — per-layer translators loaded
                # via --tlens; when present the logit lens reads through them
@@ -499,6 +503,99 @@ def _match_policy(tags: dict) -> dict | None:
     return None
 
 
+def _normalize_vprobes(raw) -> list | str:
+    """Validate a POST /probes spec list into canonical specs (or an error
+    string). A spec names a loaded direction, the decoder layer to read at
+    (default: the direction's suggested layer, else mid-stack), a metric
+    ('proj' = h·v̂ in hidden-state units, 'cos' = cosine), an optional firing
+    threshold (signed, fires on score >= threshold) and an optional trip
+    ('viz': flip the full capture on when the probe fires)."""
+    if not isinstance(raw, list):
+        return "expected {probes: [...]}"
+    n_layers = len(_decoder_layers(state["model"]))
+    specs = []
+    for p in raw:
+        d = p.get("direction") or p.get("name")
+        if d not in state["directions"]:
+            return f"unknown direction {d!r}"
+        layer = p.get("layer")
+        if layer is None:
+            layer = state["dir_meta"].get(d, {}).get("layer_from", n_layers // 2)
+        layer = int(layer)
+        if not 0 <= layer < n_layers:
+            return f"layer out of range 0..{n_layers - 1}"
+        metric = p.get("metric", "proj")
+        if metric not in ("proj", "cos"):
+            return "metric must be 'proj' or 'cos'"
+        trip = p.get("trip")
+        if trip not in (None, "viz"):
+            return "trip must be 'viz'"
+        thr = p.get("threshold")
+        ema = p.get("ema")
+        if ema is not None and not 0 < float(ema) <= 1:
+            return "ema must be in (0, 1]"
+        scale = p.get("scale")   # calibrated register level (pos-class mean
+        # projection) — lets the UI show comparable % instead of raw h·v̂,
+        # whose units differ per direction
+        specs.append({"name": p.get("name") or d, "direction": d, "layer": layer,
+                      "metric": metric,
+                      "threshold": None if thr is None else float(thr),
+                      "ema": None if ema is None else float(ema),
+                      "scale": None if scale is None else float(scale),
+                      "trip": trip})
+    return specs
+
+
+def _install_vprobe_hooks() -> None:
+    """Forward hooks computing the cheap per-token probe readouts.
+
+    A probe is one scalar per token — the dot product (or cosine) between a
+    decoder layer's output residual at the newest position and a loaded
+    direction. It is the read-only counterpart of a steer hook and costs
+    ~nothing next to the model's own math, so probes stay alive even when
+    the full capture (viz) is off. That makes the production-monitoring
+    cascade reproducible at home: a dot product screens every token, the
+    expensive instruments (lenses, attention, hidden dumps) come out only
+    where it fires (trip: 'viz')."""
+    for h in state["vprobe_handles"]:
+        h.remove()
+    state["vprobe_handles"] = []
+    state["vprobe_scores"] = {}
+    by_layer: dict = {}
+    for spec in state["vprobes"]:
+        by_layer.setdefault(spec["layer"], []).append(spec)
+    if not by_layer:
+        return
+    layers = _decoder_layers(state["model"])
+
+    def make(specs):
+        def hook(_module, _inp, out):
+            # prefill chunks would score prompt positions, not the answer —
+            # probes follow the capture convention: decode steps only
+            if state.get("in_prefill") or not state["vprobes_on"]:
+                return
+            t = out[0] if isinstance(out, tuple) else out
+            h = t[0, -1].float()
+            for spec in specs:
+                row = _dir_row(spec["direction"], spec["layer"]).float()
+                if spec["metric"] == "cos":
+                    s = torch.nn.functional.cosine_similarity(h, row, dim=0)
+                else:
+                    s = h @ (row / (row.norm() + 1e-8))
+                state["vprobe_scores"][spec["name"]] = float(s)
+        return hook
+
+    for layer, specs in by_layer.items():
+        state["vprobe_handles"].append(layers[layer].register_forward_hook(make(specs)))
+
+
+def _persist_vprobes() -> None:
+    path = state.get("probes_path")
+    if path:
+        Path(path).write_text(json.dumps(
+            {"enabled": state["vprobes_on"], "probes": state["vprobes"]}))
+
+
 _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel agents must queue
 
 
@@ -639,6 +736,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     inject_after_think = forced_prefix if after_think else ""
 
     scan = _tool_scan_new()
+    probe_ema: dict = {}   # per-generation EMA state for the cheap probes
     if not after_think:              # after_think: no tool syntax emitted yet
         _tool_scan(scan, forced_prefix)
     state["steer_mute"] = not scan["speak"]
@@ -652,6 +750,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
            "prompt_offset": n_prompt - len(prompt_ids),
            "prompt_tokens": [tok.decode(i) for i in prompt_ids],
            "tokens": [], "all_tokens": [], "norms": [], "lens": [], "jlens": [],
+           "probe": [],
            "attn_rows": [], "last_heads": [], "matrix": None, "hidden": [],
            "steer": active_steer, "tags": tags or {}, "done": False}
     # honored for the whole generation, so stored hidden states align with
@@ -726,6 +825,43 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         state["steer_mute"] = not scan["speak"]
         payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
         gen["all_tokens"].append(piece)
+        # cheap probes: scores were written by the vprobe hooks during THIS
+        # step's forward — step 0 comes straight out of prefill, uncaptured,
+        # same convention as norms/lens (see capture_offset in traces.py)
+        if step and state["vprobes"] and state["vprobes_on"]:
+            snap, fired = {}, []
+            for spec in state["vprobes"]:
+                s = state["vprobe_scores"].get(spec["name"])
+                if s is None:
+                    continue
+                entry = {"s": round(s, 4)}
+                # ema: fire on the SMOOTHED level, not a single-token spike —
+                # per-token h·v̂ is noisy; sustained level is the signal (same
+                # reason production monitors aggregate before deciding)
+                if spec.get("ema"):
+                    prev = probe_ema.get(spec["name"], s)
+                    e = probe_ema[spec["name"]] = prev * (1 - spec["ema"]) + s * spec["ema"]
+                    entry["e"] = round(e, 4)
+                gate = entry.get("e", s)
+                if spec["threshold"] is not None and gate >= spec["threshold"]:
+                    entry["fired"] = True
+                    fired.append(spec)
+                snap[spec["name"]] = entry
+            if snap:
+                payload["probe"] = snap
+                rec = {"i": step, "scores": {k: v["s"] for k, v in snap.items()}}
+                emas = {k: v["e"] for k, v in snap.items() if "e" in v}
+                if emas:
+                    rec["ema"] = emas
+                if fired:
+                    rec["fired"] = [s["name"] for s in fired]
+                gen["probe"].append(rec)
+            # trip: a firing probe turns the full capture on for the rest of
+            # this generation (and beyond — it is the server-level viz toggle;
+            # flip it back via POST /viz when done looking)
+            if not state["viz"] and any(s["trip"] == "viz" for s in fired):
+                state["viz"] = True
+                payload["probe_trip"] = True
         if out.hidden_states is not None:
             norms, cos = _layer_signals(out.hidden_states, state["directions"])
             payload.update({"norms": norms, "cos": cos})
@@ -1435,7 +1571,7 @@ async def gen_meta():
     if not g:
         return JSONResponse({"error": "no generation yet"}, status_code=404)
     keys = ("id", "n_prompt", "prompt_offset", "prompt_tokens", "tokens",
-            "all_tokens", "norms", "lens", "jlens", "steer", "tags", "done")
+            "all_tokens", "norms", "lens", "jlens", "probe", "steer", "tags", "done")
     return {k: g.get(k) for k in keys}
 
 
@@ -1588,14 +1724,20 @@ def _hidden_size() -> int:
 
 
 def _persist_directions() -> None:
-    """dirs.json is the vector library — keep it in sync with the live state."""
+    """dirs.json is the vector library — keep it in sync with the live state.
+    Persistence must never break the API: a read-only library (a deliberate
+    write-protect) demotes to a warning, the direction stays live in memory."""
     path = state.get("dirs_path")
     if not path:
         return
     raw = {k: [round(float(x), 6) for x in v.tolist()] if v.dim() == 1 else
               [[round(float(x), 6) for x in row] for row in v.tolist()]
            for k, v in state["directions"].items()}
-    Path(path).write_text(json.dumps(raw))
+    try:
+        Path(path).write_text(json.dumps(raw))
+    except OSError as e:
+        print(f"brainscope: directions not persisted ({e}) — kept in memory only",
+              flush=True)
 
 
 def load_direction_dict(path: Path) -> dict:
@@ -1708,12 +1850,159 @@ async def delete_direction(name: str):
     return {"directions": sorted(state["directions"])}
 
 
+@app.get("/probes")
+async def get_probes():
+    return {"probes": state["vprobes"], "enabled": state["vprobes_on"],
+            "last": {k: round(v, 4) for k, v in state["vprobe_scores"].items()}}
+
+
+@app.post("/probes")
+async def set_probes(body: dict):
+    """Configure the cheap activation probes — per-token scalar readouts
+    against loaded directions that stay alive even with viz off.
+
+    {"probes": [{"direction": "v_pref", "layer": 20, "threshold": 3.0,
+                 "metric": "proj", "trip": "viz", "name": "taskpush"}],
+     "enabled": true}
+
+    Every decode token then streams {"probe": {"taskpush": {"s": 2.1}}} on the
+    websocket and records the series in the trace. With a threshold the entry
+    gains "fired": true at score >= threshold; trip "viz" additionally turns
+    the full capture on the moment the probe first fires — the probe→deep-dive
+    cascade: screen every token for ~free, pay for instruments only on hits."""
+    if "enabled" in body:
+        state["vprobes_on"] = bool(body["enabled"])
+    if "probes" in body:
+        specs = _normalize_vprobes(body["probes"])
+        if isinstance(specs, str):
+            return JSONResponse({"error": specs}, status_code=400)
+        state["vprobes"] = specs
+        _install_vprobe_hooks()
+    _persist_vprobes()
+    return {"probes": state["vprobes"], "enabled": state["vprobes_on"]}
+
+
 def _persist_policy() -> None:
     path = state.get("policy_path")
     if path:
         Path(path).write_text(json.dumps(
             {"enabled": state["policy_on"], "policy": state["policy"]},
             ensure_ascii=False, indent=1))
+
+
+def _rank_auc(pos, neg) -> float:
+    """AUC via the Mann-Whitney U statistic — no sklearn needed."""
+    wins = ties = 0
+    for p in pos:
+        for n in neg:
+            if p > n:
+                wins += 1
+            elif p == n:
+                ties += 1
+    total = len(pos) * len(neg)
+    return (wins + 0.5 * ties) / total if total else float("nan")
+
+
+@app.post("/probes/train")
+async def train_probe(body: dict):
+    """Train your own probe from two contrast personas — the probe factory.
+
+    {"name": "slop", "pos_system": "...", "neg_system": "...",
+     "prompts": ["...", ...], "layer": int?, "max_tokens": 130?,
+     "temperature": 0.8?, "arm": {"ema": 0.15, "trip": "viz"}?}
+
+    The server answers every prompt under both system personas, takes each
+    answer's mean residual at `layer`, builds the diff-of-means direction
+    (mean(pos) - mean(neg)) and reports holdout AUC (every 4th prompt held
+    out) plus a threshold at the class midpoint. The direction is stored
+    under `name`; pass "arm" to also switch the probe on immediately.
+    Runs the generations live — expect ~minutes; watch them stream in the
+    viz while it trains."""
+    name = body.get("name")
+    prompts = body.get("prompts")
+    pos_sys, neg_sys = body.get("pos_system"), body.get("neg_system")
+    if not name or not isinstance(prompts, list) or len(prompts) < 4 \
+            or not pos_sys or not neg_sys:
+        return JSONResponse({"error": "expected {name, pos_system, neg_system, "
+                                      "prompts: [>=4 strings]}"}, status_code=400)
+    n_layers = len(_decoder_layers(state["model"]))
+    layer = int(body.get("layer", n_layers // 2))
+    if not 0 <= layer < n_layers:
+        return JSONResponse({"error": f"layer out of range 0..{n_layers - 1}"},
+                            status_code=400)
+    max_tokens = int(body.get("max_tokens", 130))
+    temperature = float(body.get("temperature", 0.8))
+
+    def notify(payload):
+        loop = state.get("loop")
+        if loop:
+            asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+
+    def run():
+        # features need the hidden capture regardless of the viz toggle
+        viz_before = state["viz"]
+        state["viz"] = True
+        X, y = [], []
+        try:
+            for i, prompt in enumerate(prompts):
+                for cls, sys in (("pos", pos_sys), ("neg", neg_sys)):
+                    generate_with_signals(
+                        [{"role": "system", "content": sys},
+                         {"role": "user", "content": prompt}],
+                        None, max_tokens, temperature, notify,
+                        tags={"probe_train": name, "cls": cls, "pair": str(i)})
+                    hidden = state["gen"]["hidden"]
+                    if not hidden:
+                        continue
+                    h = torch.stack([step[layer] for step in hidden]).float().mean(0)
+                    X.append(h)
+                    y.append(1 if cls == "pos" else 0)
+        finally:
+            state["viz"] = viz_before
+        pos = [x for x, l in zip(X, y) if l]
+        neg = [x for x, l in zip(X, y) if not l]
+        if len(pos) < 2 or len(neg) < 2:
+            return {"error": "not enough captured answers to train"}
+        v = torch.stack(pos).mean(0) - torch.stack(neg).mean(0)
+        v_hat = v / (v.norm() + 1e-8)
+        # holdout: every 4th prompt pair scores the direction it didn't build
+        hold = set(range(0, len(prompts), 4))
+        tr_p = [x for j, (x, l) in enumerate(zip(X, y)) if l and j // 2 not in hold]
+        tr_n = [x for j, (x, l) in enumerate(zip(X, y)) if not l and j // 2 not in hold]
+        ho_p = [x for j, (x, l) in enumerate(zip(X, y)) if l and j // 2 in hold]
+        ho_n = [x for j, (x, l) in enumerate(zip(X, y)) if not l and j // 2 in hold]
+        v_tr = torch.stack(tr_p).mean(0) - torch.stack(tr_n).mean(0)
+        v_tr = v_tr / (v_tr.norm() + 1e-8)
+        auc_hold = _rank_auc([float(x @ v_tr) for x in ho_p],
+                             [float(x @ v_tr) for x in ho_n])
+        s_pos = [float(x @ v_hat) for x in pos]
+        s_neg = [float(x @ v_hat) for x in neg]
+        thr = (sum(s_pos) / len(s_pos) + sum(s_neg) / len(s_neg)) / 2
+        state["directions"][name] = v.to(state["device"])
+        _persist_directions()
+        report = {"name": name, "layer": layer, "n": len(y),
+                  "auc_holdout": round(auc_hold, 3),
+                  "auc_insample": round(_rank_auc(s_pos, s_neg), 3),
+                  "pos_mean": round(sum(s_pos) / len(s_pos), 3),
+                  "neg_mean": round(sum(s_neg) / len(s_neg), 3),
+                  "threshold": round(thr, 3)}
+        arm = body.get("arm")
+        if isinstance(arm, dict):
+            spec = {"direction": name, "name": name, "layer": layer,
+                    "threshold": arm.get("threshold", thr),
+                    "ema": arm.get("ema", 0.15), "trip": arm.get("trip")}
+            specs = _normalize_vprobes(
+                [s for s in state["vprobes"] if s["name"] != name] + [spec])
+            if isinstance(specs, str):
+                report["arm_error"] = specs
+            else:
+                state["vprobes"] = specs
+                _install_vprobe_hooks()
+                _persist_vprobes()
+                report["armed"] = True
+        return report
+
+    return await asyncio.to_thread(run)
 
 
 @app.get("/policy")
@@ -1946,6 +2235,15 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
+@app.get("/demo")
+async def demo():
+    """A tiny stand-in app: a chat page with a configurable system prompt,
+    served same-origin so it can talk to /v1 without CORS. Open it next to
+    the main view to poke at a behavior (e.g. an assistant that pushes
+    tasks) without wiring up your real application."""
+    return FileResponse(STATIC / "demo.html")
+
+
 @app.websocket("/ws")
 async def ws(websocket: WebSocket):
     await websocket.accept()
@@ -1978,6 +2276,10 @@ def main() -> None:
                              "to patch into the model — serve a baked persona and audit it")
     parser.add_argument("--policy", type=Path, default=None,
                         help="JSON steering-policy rules matched against request metadata tags")
+    parser.add_argument("--probes", type=Path, default=None,
+                        help="JSON {enabled, probes: [...]} cheap activation probes "
+                             "(see POST /probes) — per-token h·v̂ readouts that stay "
+                             "on even with viz off; kept in sync with live edits")
     parser.add_argument("--lens", choices=["auto", "on", "off"], default="auto",
                         help="logit lens (per-layer next-token readout); auto = on for CUDA, "
                              "off for CPU (one lm_head matmul per layer per token)")
@@ -2034,6 +2336,17 @@ def main() -> None:
                 state["policy_on"] = bool(raw.get("enabled", True))
             else:                        # legacy format: bare list of rules
                 state["policy"] = raw
+    if args.probes:   # after --directions: probes reference loaded directions
+        state["probes_path"] = args.probes
+        if args.probes.exists():
+            raw = json.loads(args.probes.read_text())
+            state["vprobes_on"] = bool(raw.get("enabled", True))
+            specs = _normalize_vprobes(raw.get("probes", []))
+            if isinstance(specs, str):
+                raise SystemExit(f"brainscope: --probes {args.probes}: {specs}")
+            state["vprobes"] = specs
+            _install_vprobe_hooks()
+            print(f"brainscope: {len(specs)} probe(s) armed", flush=True)
     state["lens"] = args.lens == "on" or (args.lens == "auto" and state["device"] == "cuda")
     if args.tlens:
         sd = torch.load(args.tlens, map_location="cpu")

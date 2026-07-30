@@ -9,3 +9,5 @@ build/
 lenses/
 traces/
 .pytest_cache/
+# LH/proprietary art must never enter this public repo — avatar is deploy-local only
+brainscope/static/avatar.png

@@ -43,11 +43,15 @@ def fitted_lens(model, tok):
 
 
 def make_state(model, tok, traces_dir):
+    # the model is session-scoped: drop probe hooks a previous test registered
+    for h in bs.state.get("vprobe_handles", []):
+        h.remove()
     bs.state.update({
         "model": model, "tokenizer": tok, "device": "cpu",
         "model_name": "tiny-random-qwen2", "directions": {}, "dir_meta": {},
         "clients": set(), "steer": None, "steer_handles": [], "steer_mute": False,
         "policy": [], "policy_on": True, "gen": None, "lens": True, "viz": True,
+        "vprobes": [], "vprobes_on": True, "vprobe_handles": [], "vprobe_scores": {},
         "jlens": None, "jlens_on": False,
         "traces": TraceStore(traces_dir), "save_traces": True, "save_hidden": False,
         "probes": {"attn": {}, "mlp": {}},

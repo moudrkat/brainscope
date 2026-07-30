@@ -39,6 +39,30 @@ prefill is a much larger dose.
   default — attention capture costs memory.
 - `GET /directions` — list loaded directions. `POST /steer` — set a global
   steering state instead of per-request.
+- `POST /probes` — arm cheap activation probes: per-token scalar readouts
+  (`h·v̂` or cosine) of one layer's residual against a loaded direction. They
+  cost ~nothing and stay alive even with viz off, so they can screen every
+  token of real traffic; give a probe a `threshold` and `"trip": "viz"` and
+  the full capture turns itself on the moment the probe fires — the
+  probe → deep-dive cascade. `GET /probes` shows config + last scores;
+  `--probes probes.json` arms them at startup.
+
+      {"probes": [{"direction": "v_pref", "layer": 20, "threshold": 3.0,
+                   "trip": "viz"}], "enabled": true}
+
+- `POST /probes/train` — the probe factory: train your OWN probe from two
+  contrast personas, no external tooling. The server answers your prompts
+  under both system prompts, extracts the diff-of-means direction from the
+  answers' activations, reports holdout AUC + a calibrated threshold, and
+  (with `arm`) switches the probe on:
+
+      {"name": "slop", "pos_system": "answer in generic AI-slop style…",
+       "neg_system": "answer densely and concretely…",
+       "prompts": ["…", "…", "…", "…"], "arm": {"ema": 0.15, "trip": "viz"}}
+
+  Takes minutes (it generates live — watch the viz). Check `auc_holdout`
+  before trusting the meter: ~0.5 means it learned noise.
+
 - `GET /info` — model + config.
 
 ## Gotchas

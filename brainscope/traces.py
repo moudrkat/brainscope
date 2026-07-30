@@ -87,6 +87,9 @@ class TraceStore:
                  "capture_offset": len(all_tokens) - len(gen.get("tokens", [])),
                  "tokens": gen.get("tokens", []), "norms": gen.get("norms", []),
                  "lens": gen.get("lens", []), "jlens": gen.get("jlens", []),
+                 # cheap probe series: [{"i": step, "scores": {...}, "fired": [...]}]
+                 # — indexed by all_tokens step, present even for dark-mode runs
+                 "probe": gen.get("probe", []),
                  "think": think_span(all_tokens),
                  "replay": gen.get("replay"),
                  "has_hidden": bool(hidden)}
