@@ -39,13 +39,26 @@ members of a pair stay in one fold).
 **Out-of-sample (20 unseen topics × natural / sloppy-request /
 concrete-request + 8 false-positive probes):**
 
-- Discrimination: AUC [FILL] (95% bootstrap CI [FILL]), Gini [FILL],
-  KS [FILL]
-- Deployed threshold 3.3: FP [FILL], FN [FILL]
-- False-positive probes (technical bullet lists, excited-but-factual
-  numbers, plain email, recipe): [FILL summary]
-- Population note: natural LinkedIn-post answers score [FILL] — between
-  the classes, as expected for a genre that is partly slop by construction.
+- Discrimination: AUC 1.000 (95% bootstrap CI 1.0–1.0), Gini 1.0,
+  KS 1.0 — zero overlap (sloppy +1.73 ± 1.00, concrete −5.48 ± 0.72).
+- **Calibration drift found:** the dev-calibrated answer-mean threshold
+  (3.3) sits above the OOS sloppy distribution → 19/20 FN at that
+  operating point; the OOS midpoint ≈ −1.9 gives 19–20/20 TP at 0/20
+  FP. Streaming (per-token EMA, peaks +13) keeps a higher threshold —
+  two operating points for two uses. Recalibrate on the target
+  population, as ever.
+- False-positive probes: technical bullets (−7.8) and sober summaries
+  (−7.1) score lowest of everything — bullets are not slop; plain
+  email −0.3. Two fired: a generic congratulations message (+6.8,
+  arguably genre-true) and an excited-but-factual post (+4.6) — the
+  hype/slop register correlation, a real limitation.
+- Population note: natural LinkedIn-post answers score +3.14 ± 1.07,
+  above even the explicit sloppy requests — the model's default
+  LinkedIn register is the register.
+- Human-text spot check (teacher-forced): the announcement post for
+  this meter scores −9.8, below the concrete class — with the caveat
+  that the probe was trained on the model's own generations, not
+  human text.
 
 **Qualitative token attribution (out-of-sample):** highlights land on
 "Let's be real:", headline bait, hashtags, "Hope this helps!"-style
