@@ -1,7 +1,10 @@
 # Slop-o-meter — concept & validation note
 
-*A linear probe on LLM activations that scores "AI slop" register per token,
-validated the way a bank validates a scorecard. Short on purpose.*
+*A linear probe on LLM activations that scores "AI slop" register per
+token, built in a day and validated the way a bank smoke-tests a
+scorecard. Exploratory, not confirmatory — the perfect separations
+below say the test classes are easy, not that the meter is perfect.
+Short on purpose.*
 
 ## 1. Purpose & intended use
 
