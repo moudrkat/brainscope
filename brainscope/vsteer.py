@@ -202,6 +202,31 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
             v[0, heads[:, None], pos[None, :], :] *= m
             touched += len(idx) * int(heads.numel())
 
+    # What the edit actually moves. Scaling V does NOT touch the softmax — the
+    # attention weights are identical before and after, which is the whole point
+    # of doing it in the cache. What changes is each position's *effective*
+    # contribution, alpha * m (paper Eq. 6). So we report both: how the model's
+    # attention is split between the two spans per layer, and how that split
+    # looks once the multipliers are folded in. That difference is the
+    # intervention, made visible.
+    mass = {"system": [], "stale": [], "system_after": [], "stale_after": []}
+    m_hi, m_lo = 1.0 + plan_.gamma_plus, 1.0 - plan_.gamma_minus
+    for l in range(len(layers)):
+        a = probe.attentions[l][0, :, -1, :].detach().float().cpu()     # [H_q, T]
+        sel = mask[l].repeat_interleave(n_rep)                          # [H_q] bool
+        tot = a.sum(-1).clamp(min=1e-9)
+        b_raw, s_raw = a[:, b_idx].sum(-1), a[:, s_idx].sum(-1)
+        mass["system"].append(round(float((b_raw / tot).mean()), 4))
+        mass["stale"].append(round(float((s_raw / tot).mean()), 4))
+        # only the selected head groups are rescaled; the rest keep m = 1
+        bm = torch.where(sel, torch.tensor(m_hi), torch.tensor(1.0))
+        sm = torch.where(sel, torch.tensor(m_lo), torch.tensor(1.0))
+        b_eff, s_eff = b_raw * bm, s_raw * sm
+        rest = tot - b_raw - s_raw
+        tot_eff = (b_eff + s_eff + rest).clamp(min=1e-9)
+        mass["system_after"].append(round(float((b_eff / tot_eff).mean()), 4))
+        mass["stale_after"].append(round(float((s_eff / tot_eff).mean()), 4))
+
     out = last_forward(False)          # position T-1 read stale values; redo it
     report = {
         "heads_edited": int(mask.sum()), "heads_total": int(mask.numel()),
@@ -210,5 +235,6 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
         "values_touched": touched,
         "gamma_plus": plan_.gamma_plus, "gamma_minus": plan_.gamma_minus,
         "delta": [[round(x, 4) for x in row] for row in delta.tolist()],
+        "mass": mass,
     }
     return out, report

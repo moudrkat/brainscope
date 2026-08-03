@@ -123,7 +123,25 @@ required prefix, casing, language) respond well; rules about how an answer
 *ends* need a much larger `gamma_plus`, and past ~10 the model starts producing
 degenerate text, so watch the output and not just your metric.
 
+The **demo app** (`/demo`) has the conflicts ready to load — a system rule, a
+pre-update message asking for the opposite, and the assistant having obeyed the
+old rule for a couple of turns. Pick one, hit send, tick *hierarchy fix*, and
+watch the answer and the tab change together. γ+ and γ− are editable there too.
+
+![the demo app with a loaded scenario: the system prompt says begin every reply with ACK, the conversation above shows a user asking for HELLO instead and the assistant obeying it, a divider marks where the system prompt changed, and controls for the hierarchy fix and both gamma parameters sit in the toolbar](docs/hierarchy-demo.jpg)
+
+There is no layer to choose. Direction steering asks you which layer to inject
+at; here the attribution picks the heads, wherever they are — on a 24-layer
+model a typical edit lands on a dozen head groups spread over most of the depth.
+
 Not a prompt-injection defence — the demoted messages here are benign.
+
+Method: **Steering Instruction Hierarchies at Inference Time** — Siqi Zeng,
+Sewoong Lee, Han Zhao, Julia Hockenmaier, arXiv:2607.26228, COLM 2026
+([code](https://github.com/cindy2000sh/v-steer)). The implementation here is
+written from the paper. A separate repo,
+[old-news](https://github.com/moudrkat/old-news), has the eval suite and the
+numbers behind the defaults.
 
 ## Quickstart
 

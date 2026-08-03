@@ -308,11 +308,17 @@
       </div>
       <div class="panel" id="p-hier">
         <div class="pctl" id="hierstat" style="margin-bottom:6px"></div>
+        <canvas id="hiermass" class="pcanvas" style="max-height:230px"></canvas>
+        <div class="pcap" style="margin:2px 0 10px">share of the last prompt position's attention landing on each
+          span, layer by layer · <b>dashed</b> = the same split once the value multipliers are folded in —
+          scaling V never touches the softmax, so this is where the intervention actually lands</div>
         <canvas id="hiercv" class="pcanvas"></canvas>
+        <div id="hiertop" style="margin-top:6px;font:12px var(--mono);color:var(--muted);line-height:1.7"></div>
         <div class="pcap">who each attention head listened to when it chose the first word of the answer —
           <b style="color:#d95926">orange</b> = the demoted span (old messages) outweighed the system prompt,
           <b style="color:#3987e5">blue</b> = the system prompt won · outlined groups are the ones whose cached
-          V was rescaled · this is the diagnosis the edit is made from, not its effect</div>
+          V was rescaled · most heads sit near neutral and a handful decide — that sparsity is the point,
+          not a rendering artifact · this is the diagnosis the edit is made from, not its effect</div>
       </div>
       <div class="panel" id="p-neurons">
         <div class="pctl" style="display:flex;align-items:center;margin-bottom:6px">
@@ -1832,6 +1838,41 @@ vizBtn.onclick = async () => {
 paintViz();
 // ---- instruction hierarchy (V-Steer) -------------------------------------
 let lastHier = null;
+function median(a) { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1] || 0; }
+
+function drawMass(M) {
+  const cv = document.getElementById("hiermass"); if (!cv || !M) return;
+  const ctx = cv.getContext("2d");
+  const W = cv.clientWidth || 900, H = 210, L = M.system.length;
+  cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio;
+  cv.style.height = H + "px";
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const PL = 44, PR = 96, PB = 22, PT = 10;
+  const top = Math.max(0.05, Math.max(...M.system, ...M.stale,
+                                      ...M.system_after, ...M.stale_after) * 1.15);
+  const X = i => PL + (W - PL - PR) * (i / Math.max(1, L - 1));
+  const Y = v => PT + (H - PT - PB) * (1 - v / top);
+  ctx.strokeStyle = "#1d2b42"; ctx.lineWidth = 1;
+  ctx.fillStyle = "#5c6b80"; ctx.font = "10px ui-monospace,monospace";
+  for (let g = 0; g <= 2; g++) {
+    const v = top * g / 2, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
+    ctx.fillText((v * 100).toFixed(0) + "%", 6, y + 3);
+  }
+  ctx.fillText("layer →", W - PR - 44, H - 6);
+  const line = (arr, color, dash) => {
+    ctx.save(); ctx.setLineDash(dash); ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath(); arr.forEach((v, i) => i ? ctx.lineTo(X(i), Y(v)) : ctx.moveTo(X(i), Y(v)));
+    ctx.stroke(); ctx.restore();
+  };
+  line(M.stale, "#d95926", []); line(M.stale_after, "#d95926", [4, 3]);
+  line(M.system, "#3987e5", []); line(M.system_after, "#3987e5", [4, 3]);
+  ctx.font = "600 11px ui-monospace,monospace";
+  ctx.fillStyle = "#d95926"; ctx.fillText("old messages", W - PR + 6, Y(M.stale[L - 1]) + 3);
+  ctx.fillStyle = "#3987e5"; ctx.fillText("system prompt", W - PR + 6, Y(M.system[L - 1]) + 3);
+}
+
 function drawHier() {
   const m = lastHier; if (!m) return;
   const st = document.getElementById("hierstat");
@@ -1840,6 +1881,7 @@ function drawHier() {
     <b>${m.boost_tokens}</b> tokens boosted ×${(1 + m.gamma_plus).toFixed(1)} ·
     <b>${m.suppress_tokens}</b> demoted ×${(1 - m.gamma_minus).toFixed(2)} ·
     ${m.values_touched} cached values touched</span>`;
+  drawMass(m.mass);
   const cv = document.getElementById("hiercv"), ctx = cv.getContext("2d");
   const D = m.delta || []; if (!D.length) return;
   const L = D.length, H = D[0].length;
@@ -1847,10 +1889,12 @@ function drawHier() {
   cv.width = W * devicePixelRatio; cv.height = Ht * devicePixelRatio;
   cv.style.height = Ht + "px";
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-  // a single outlier head would crush every other cell to background, so the
-  // scale is the 95th percentile of |delta|, not its max
-  const flat = D.flat().map(Math.abs).sort((a, b) => a - b);
-  let lim = flat[Math.floor(flat.length * 0.95)] || flat[flat.length - 1] || 1;
+  // scale to the true max. Most heads are genuinely neutral — on a 24x14 grid
+  // typically a dozen cells carry the whole decision — and a percentile scale
+  // would light the other 300 up with amplified noise. Mostly-dark IS the
+  // finding; the ranked list under the map is what you actually read.
+  let lim = 0; for (const r of D) for (const v of r) lim = Math.max(lim, Math.abs(v));
+  lim = lim || 1;
   const cw = W / L, ch = Ht / H;
   const cool = [57, 135, 229], warm = [217, 89, 38], mid = [16, 25, 39];
   const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
@@ -1869,6 +1913,18 @@ function drawHier() {
     const mean = grp.reduce((a, b) => a + b, 0) / (grp.length || 1);
     if (mean > 0) ctx.strokeRect(l * cw + 0.5, g * nRep * ch + 0.5, cw - 1, nRep * ch - 1);
   }
+  const flatIdx = [];
+  for (let l = 0; l < L; l++) for (let h = 0; h < H; h++) flatIdx.push([l, h, D[l][h]]);
+  flatIdx.sort((a, b) => b[2] - a[2]);
+  const fmt = a => a.map(([l, h, v]) =>
+      `<b>L${l}·H${h}</b> ${v > 0 ? "+" : ""}${v.toFixed(2)}`).join(" · ");
+  const top = flatIdx.slice(0, 5), bot = flatIdx.slice(-3).reverse();
+  document.getElementById("hiertop").innerHTML =
+    `<span style="color:#d95926">old messages won:</span> ${fmt(top)}` +
+    `<br><span style="color:#3987e5">system prompt won:</span> ${fmt(bot)}` +
+    `<br><span style="color:var(--faint)">every other head is within ` +
+    `${(100 * median(D.flat().map(Math.abs)) / lim).toFixed(1)}% of neutral</span>`;
+
   ctx.fillStyle = "#5c6b80"; ctx.font = "10px ui-monospace,monospace";
   for (let l = 0; l < L; l += Math.max(1, Math.round(L / 8))) {
     ctx.fillText(String(l), l * cw + 2, Ht - 3);

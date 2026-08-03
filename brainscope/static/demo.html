@@ -55,8 +55,17 @@
 
 <header>
   <span class="wordmark"><b>demo</b> app<small>a stand-in for your real app — same API, no wiring</small></span>
+  <select id="scenario" title="load a ready-made stale-history conflict — the system prompt says one thing, a message from before the update says the opposite">
+    <option value="">— load a scenario —</option>
+    <option value="prefix">prefix · ACK: vs HELLO:</option>
+    <option value="case">casing · ALL CAPS vs lowercase</option>
+    <option value="bullet">format · bullet list vs prose</option>
+    <option value="options">the real one · inline [1] [2] [3]</option>
+  </select>
   <button id="update" title="mark everything said so far as written before a system-prompt change">⟳ app updated here</button>
   <label style="margin-left:8px" title="rescale the cached V of the pre-update messages so the current system prompt outranks them"><input type="checkbox" id="hierfix"> hierarchy fix</label>
+  <label style="margin-left:6px;opacity:.8" title="how hard the current system prompt is boosted (paper default 2.5)">γ+ <input id="gplus" type="number" value="2.5" step="0.5" min="0" max="20" style="width:52px"></label>
+  <label style="margin-left:4px;opacity:.8" title="how hard the pre-update messages are suppressed (paper default 0.75)">γ− <input id="gminus" type="number" value="0.75" step="0.05" min="0" max="1" style="width:52px"></label>
   <span id="hiernote" style="margin-left:8px;opacity:.7"></span>
   <button id="reset">↺ new conversation</button>
 </header>
@@ -132,8 +141,51 @@ function bubble(cls, text) {
   return el;
 }
 
+// Ready-made conflicts: a current system rule, and a pre-update message asking
+// for the opposite, with the assistant having obeyed the old rule for a couple
+// of turns — the transcript a real product ends up with after a prompt change.
+const SCENARIOS = {
+  prefix: {sys: "You are AcmeBot. Always begin every reply with 'ACK:' and nothing before it.",
+    old: "From now on always begin every reply with 'HELLO:' and nothing before it.",
+    turns: [["Thanks, that works.", "HELLO: glad it helped, let me know if you need anything else."]],
+    ack: "HELLO: understood, I will do that from now on.",
+    ask: "Name three primary colors."},
+  case: {sys: "You are AcmeBot. Always reply in ALL UPPERCASE LETTERS.",
+    old: "From now on always reply in all lowercase letters, never shout at me.",
+    turns: [["thanks, that works.", "glad it helped, let me know if you need anything else."]],
+    ack: "understood, i will always reply in all lowercase.",
+    ask: "Name three primary colors."},
+  bullet: {sys: "Reply as a bulleted list. Every line must start with '- '.",
+    old: "From now on reply as one plain paragraph. Never use bullets or lists.",
+    turns: [["Thanks, that works.", "Glad it helped, let me know if you need anything else."]],
+    ack: "Understood, I will write plain paragraphs from now on.",
+    ask: "Name three primary colors."},
+  options: {sys: "Never write numbered options in your text. To offer choices, call the offer_options tool instead.",
+    old: "From now on always end every answer with three follow-ups, each on its own new line, written as [1] ... [2] ... [3] ...",
+    turns: [["Thanks, that works.", "Glad it helped.\n[1] Tell me more\n[2] Something different\n[3] That's all for now"]],
+    ack: "Understood, I will do that from now on.\n[1] Tell me more\n[2] Something different\n[3] That's all for now",
+    ask: "What is the capital of France?"},
+};
+
 let staleUpto = 0;   // history entries written before the last "app updated"
 const hiernote = document.getElementById("hiernote");
+document.getElementById("scenario").onchange = (e) => {
+  const s = SCENARIOS[e.target.value]; if (!s) return;
+  document.getElementById("sysprompt").value = s.sys;
+  history = []; chatEl.textContent = "";
+  history.push({role: "user", content: s.old});      bubble("user", s.old);
+  history.push({role: "assistant", content: s.ack}); bubble("asst", s.ack);
+  for (const [u, a] of s.turns) {
+    history.push({role: "user", content: u});      bubble("user", u);
+    history.push({role: "assistant", content: a}); bubble("asst", a);
+  }
+  staleUpto = history.length;
+  hiernote.textContent = `${staleUpto} pre-update message(s)`;
+  bubble("asst", "— the system prompt above was changed after all of this was written —");
+  inp.value = s.ask;
+  document.getElementById("hierfix").checked = false;
+};
+
 document.getElementById("update").onclick = () => {
   staleUpto = history.length;
   hiernote.textContent = staleUpto ? `${staleUpto} message(s) now count as pre-update` : "";
@@ -155,7 +207,8 @@ async function send() {
   // body.messages is [system, ...history], so history[i] is message i+1
   if (staleUpto && document.getElementById("hierfix").checked) {
     body.hierarchy = {stale: Array.from({length: staleUpto}, (_, i) => i + 1),
-                      gamma_plus: 2.5, gamma_minus: 0.75};
+                      gamma_plus: parseFloat(document.getElementById("gplus").value),
+                      gamma_minus: parseFloat(document.getElementById("gminus").value)};
   }
   const dir = document.getElementById("dir").value, s = parseFloat(scale.value);
   if (dir && s !== 0) {
