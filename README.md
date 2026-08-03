@@ -49,11 +49,13 @@ view into the residual stream. What it does:
   cosine and which words the vector suppressed
   ([docs](docs/steering.md)).
 - **Put the system prompt back on top** — instruction-hierarchy steering
-  (V-Steer, arXiv:2607.26228): `POST /hierarchy {"stale": [2,3]}` marks the
-  messages that lost authority (history written before a system-prompt change),
-  and the heads that keep obeying them get that span's *cached V* scaled down.
-  Nothing is added to the residual stream and nothing leaves the context — the
-  old messages stay readable, they just stop giving orders.
+  (V-Steer, arXiv:2607.26228). You ship a new system prompt, the conversation
+  keeps obeying the old one. `POST /hierarchy {"stale": [2,3]}` marks the
+  messages that lost authority, and the heads still taking orders from them get
+  that span's *cached V* scaled down. Nothing is added to the residual stream
+  and nothing leaves the context — the old messages stay readable, they just
+  stop giving orders. The **hierarchy** tab shows which head listened to which
+  ([details ↓](#instruction-hierarchy)).
 - **Watch steering reroute attention** — the forced replay can also report
   per-head attention divergence between clean and steered passes (JSD +
   focus-mass delta, the rerouting signature from arXiv 2605.06342): pass
@@ -95,6 +97,33 @@ flowchart LR
 ![brainscope demo](docs/demo.gif)
 
 **Docs:** [Steering](docs/steering.md) · [Auditing baked personas](docs/auditing.md) · [J-lens](docs/jlens.md) · [Reasoning traces](docs/traces.md)
+
+## Instruction hierarchy
+
+A system prompt is supposed to outrank the conversation, and nothing in the
+architecture enforces that. Change a rule mid-product and the transcript still
+carries the old one — every message benign, just older than the policy.
+
+`POST /hierarchy {"stale": [1, 2], "gamma_plus": 2.5, "gamma_minus": 0.75}`
+(or the same object per request in `/v1/chat/completions`) marks which messages
+lost authority. After the prompt is prefilled, direct logit attribution asks
+each attention head whether it took its cue from the system prompt or from a
+demoted message, and the ones that got it backwards have their cached value
+vectors rescaled at those positions. The edit lives in the KV cache, so
+decoding costs nothing extra.
+
+![the hierarchy tab: a layer-by-head heatmap where orange marks heads that let the old messages outweigh the system prompt and blue marks heads where the system prompt won, with the rescaled head groups outlined; above it a line reading 22 of 48 head groups rescaled, 17 tokens boosted, 26 demoted](docs/hierarchy.jpg)
+
+The tab is the diagnosis, not the effect: orange heads are the ones handing
+authority to old messages. Outlined groups are the ones that got rescaled — the
+edit is per KV head, because that is the finest granularity the cache has.
+
+Defaults are the paper's. Rules visible in the first token of the answer (a
+required prefix, casing, language) respond well; rules about how an answer
+*ends* need a much larger `gamma_plus`, and past ~10 the model starts producing
+degenerate text, so watch the output and not just your metric.
+
+Not a prompt-injection defence — the demoted messages here are benign.
 
 ## Quickstart
 

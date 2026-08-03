@@ -205,6 +205,7 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
     out = last_forward(False)          # position T-1 read stale values; redo it
     report = {
         "heads_edited": int(mask.sum()), "heads_total": int(mask.numel()),
+        "n_rep": n_rep,
         "boost_tokens": len(plan_.boost), "suppress_tokens": len(plan_.suppress),
         "values_touched": touched,
         "gamma_plus": plan_.gamma_plus, "gamma_minus": plan_.gamma_minus,

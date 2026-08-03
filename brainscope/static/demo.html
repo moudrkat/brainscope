@@ -55,6 +55,9 @@
 
 <header>
   <span class="wordmark"><b>demo</b> app<small>a stand-in for your real app — same API, no wiring</small></span>
+  <button id="update" title="mark everything said so far as written before a system-prompt change">⟳ app updated here</button>
+  <label style="margin-left:8px" title="rescale the cached V of the pre-update messages so the current system prompt outranks them"><input type="checkbox" id="hierfix"> hierarchy fix</label>
+  <span id="hiernote" style="margin-left:8px;opacity:.7"></span>
   <button id="reset">↺ new conversation</button>
 </header>
 
@@ -129,6 +132,14 @@ function bubble(cls, text) {
   return el;
 }
 
+let staleUpto = 0;   // history entries written before the last "app updated"
+const hiernote = document.getElementById("hiernote");
+document.getElementById("update").onclick = () => {
+  staleUpto = history.length;
+  hiernote.textContent = staleUpto ? `${staleUpto} message(s) now count as pre-update` : "";
+  bubble("asst", "— app updated: everything above was written under the old system prompt —");
+};
+
 async function send() {
   const text = inp.value.trim();
   if (!text) return;
@@ -141,6 +152,11 @@ async function send() {
     max_tokens: 320,
     metadata: {agent: "demo"},
   };
+  // body.messages is [system, ...history], so history[i] is message i+1
+  if (staleUpto && document.getElementById("hierfix").checked) {
+    body.hierarchy = {stale: Array.from({length: staleUpto}, (_, i) => i + 1),
+                      gamma_plus: 2.5, gamma_minus: 0.75};
+  }
   const dir = document.getElementById("dir").value, s = parseFloat(scale.value);
   if (dir && s !== 0) {
     body.steering = {id: dir, layer: parseInt(document.getElementById("layer").value),
@@ -162,5 +178,7 @@ async function send() {
 }
 document.getElementById("send").onclick = send;
 inp.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
-document.getElementById("reset").onclick = () => { history = []; chatEl.textContent = ""; };
+document.getElementById("reset").onclick = () => {
+  history = []; chatEl.textContent = ""; staleUpto = 0; hiernote.textContent = "";
+};
 </script>

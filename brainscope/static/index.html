@@ -295,6 +295,7 @@
         <button class="tab" data-p="matrix" id="tab-matrix">matrix</button>
         <button class="tab" data-p="lens">logit lens</button>
         <button class="tab" data-p="jlens" id="tab-jlens" style="display:none">J-lens</button>
+        <button class="tab" data-p="hier" id="tab-hier" style="display:none">hierarchy</button>
         <button class="tab" data-p="traces" id="tab-traces" style="display:none">traces</button>
         <span id="tabnote"></span>
       </div>
@@ -304,6 +305,14 @@
           architecture · <b>click any cell to open its neurons</b> — the full channel vector behind that number ·
           debugging: a suddenly brighter band of columns = the model straining, often right
           before the answer derails</div>
+      </div>
+      <div class="panel" id="p-hier">
+        <div class="pctl" id="hierstat" style="margin-bottom:6px"></div>
+        <canvas id="hiercv" class="pcanvas"></canvas>
+        <div class="pcap">who each attention head listened to when it chose the first word of the answer —
+          <b style="color:#d95926">orange</b> = the demoted span (old messages) outweighed the system prompt,
+          <b style="color:#3987e5">blue</b> = the system prompt won · outlined groups are the ones whose cached
+          V was rescaled · this is the diagnosis the edit is made from, not its effect</div>
       </div>
       <div class="panel" id="p-neurons">
         <div class="pctl" style="display:flex;align-items:center;margin-bottom:6px">
@@ -1144,6 +1153,10 @@ function connect() {
       const tag = msg.tags && msg.tags.agent ? ` · ${msg.tags.agent}${msg.tags.phase ? "/" + msg.tags.phase : ""}` : "";
       stxt.textContent = `generating · prompt ${msg.prompt_tokens} tok${tag}`;
       document.getElementById("tabnote").textContent = steerLabel(msg.steer);
+    } else if (msg.type === "hierarchy") {
+      lastHier = msg;
+      document.getElementById("tab-hier").style.display = "";
+      drawHier();
     } else if (msg.type === "token") {
       const kIdx = allTokens.length;
       allTokens.push(msg.text);
@@ -1817,4 +1830,51 @@ vizBtn.onclick = async () => {
   if (r) { vizOn = !!r.on; paintViz(); }
 };
 paintViz();
+// ---- instruction hierarchy (V-Steer) -------------------------------------
+let lastHier = null;
+function drawHier() {
+  const m = lastHier; if (!m) return;
+  const st = document.getElementById("hierstat");
+  if (m.skipped) { st.innerHTML = `<span class="pinfo">not applied — ${m.skipped}</span>`; return; }
+  st.innerHTML = `<span class="pinfo"><b>${m.heads_edited}</b>/${m.heads_total} head groups rescaled ·
+    <b>${m.boost_tokens}</b> tokens boosted ×${(1 + m.gamma_plus).toFixed(1)} ·
+    <b>${m.suppress_tokens}</b> demoted ×${(1 - m.gamma_minus).toFixed(2)} ·
+    ${m.values_touched} cached values touched</span>`;
+  const cv = document.getElementById("hiercv"), ctx = cv.getContext("2d");
+  const D = m.delta || []; if (!D.length) return;
+  const L = D.length, H = D[0].length;
+  const W = cv.clientWidth || 900, Ht = Math.max(180, Math.min(360, H * 12));
+  cv.width = W * devicePixelRatio; cv.height = Ht * devicePixelRatio;
+  cv.style.height = Ht + "px";
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  // a single outlier head would crush every other cell to background, so the
+  // scale is the 95th percentile of |delta|, not its max
+  const flat = D.flat().map(Math.abs).sort((a, b) => a - b);
+  let lim = flat[Math.floor(flat.length * 0.95)] || flat[flat.length - 1] || 1;
+  const cw = W / L, ch = Ht / H;
+  const cool = [57, 135, 229], warm = [217, 89, 38], mid = [16, 25, 39];
+  const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
+  ctx.clearRect(0, 0, W, Ht);
+  for (let l = 0; l < L; l++) for (let h = 0; h < H; h++) {
+    const v = Math.max(-1, Math.min(1, D[l][h] / lim));
+    const c = v >= 0 ? mix(mid, warm, Math.min(v, 1)) : mix(mid, cool, Math.min(-v, 1));
+    ctx.fillStyle = `rgb(${c.join(",")})`;
+    ctx.fillRect(l * cw, h * ch, Math.ceil(cw), Math.ceil(ch));
+  }
+  // the edit is per KV head, so outline whole groups, not single query heads
+  const nRep = m.n_rep || (m.heads_total ? H / (m.heads_total / L) : 1);
+  ctx.strokeStyle = "rgba(233,238,245,.55)"; ctx.lineWidth = 1;
+  for (let l = 0; l < L; l++) for (let g = 0; g < H / nRep; g++) {
+    const grp = D[l].slice(g * nRep, (g + 1) * nRep);
+    const mean = grp.reduce((a, b) => a + b, 0) / (grp.length || 1);
+    if (mean > 0) ctx.strokeRect(l * cw + 0.5, g * nRep * ch + 0.5, cw - 1, nRep * ch - 1);
+  }
+  ctx.fillStyle = "#5c6b80"; ctx.font = "10px ui-monospace,monospace";
+  for (let l = 0; l < L; l += Math.max(1, Math.round(L / 8))) {
+    ctx.fillText(String(l), l * cw + 2, Ht - 3);
+  }
+  ctx.fillText("layer →", W - 52, Ht - 3);
+}
+window.addEventListener("resize", () => { if (lastHier) drawHier(); });
+
 </script>
