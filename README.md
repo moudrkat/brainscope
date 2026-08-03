@@ -339,7 +339,7 @@ demoted message, and the ones that got it backwards have their cached value
 vectors rescaled at those positions. The edit lives in the KV cache, so
 decoding costs nothing extra.
 
-![the hierarchy tab: a layer-by-head heatmap where orange marks heads that let the old messages outweigh the system prompt and blue marks heads where the system prompt won, with the rescaled head groups outlined; above it a line reading 22 of 48 head groups rescaled, 17 tokens boosted, 26 demoted](docs/hierarchy.jpg)
+![the hierarchy tab: two lines across all layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages, with the old messages taking about three times more of it and the gap widening in the deepest layers](docs/hierarchy.jpg)
 
 The tab is the diagnosis, not the effect: orange heads are the ones handing
 authority to old messages. Outlined groups are the ones that got rescaled — the
