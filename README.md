@@ -48,6 +48,12 @@ view into the residual stream. What it does:
   `POST /replay` A/Bs any conversation under a spec, showing per-layer
   cosine and which words the vector suppressed
   ([docs](docs/steering.md)).
+- **Put the system prompt back on top** — instruction-hierarchy steering
+  (V-Steer, arXiv:2607.26228): `POST /hierarchy {"stale": [2,3]}` marks the
+  messages that lost authority (history written before a system-prompt change),
+  and the heads that keep obeying them get that span's *cached V* scaled down.
+  Nothing is added to the residual stream and nothing leaves the context — the
+  old messages stay readable, they just stop giving orders.
 - **Watch steering reroute attention** — the forced replay can also report
   per-head attention divergence between clean and steered passes (JSD +
   focus-mass delta, the rerouting signature from arXiv 2605.06342): pass

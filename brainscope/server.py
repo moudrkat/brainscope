@@ -37,6 +37,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
+from . import vsteer as _vsteer
 from .jlens import JacobianLens
 from .traces import TraceStore, emergence as compute_emergence
 
@@ -69,7 +70,9 @@ state: dict = {"model": None, "tokenizer": None, "directions": {}, "dir_meta": {
                "jlens": None, "jlens_on": False,
                # trace persistence — TraceStore via --traces; hidden-state
                # capture is the heavy part and stays off until asked
-               "traces": None, "save_traces": True, "save_hidden": False}
+               "traces": None, "save_traces": True, "save_hidden": False,
+               # instruction hierarchy (V-Steer): global default spec, or None
+               "hierarchy": None}
 
 # hidden-state capture safety valve: at most this many steps kept per trace
 # (a 9B model's 4k-token trace would otherwise stack >1 GB of fp16)
@@ -602,7 +605,7 @@ _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel ag
 @torch.inference_mode()
 def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                           steering: dict | None = None, tags: dict | None = None,
-                          tool_choice=None):
+                          tool_choice=None, hierarchy: dict | None = None):
     """Token-by-token generation, calling notify(payload) per token.
 
     `steering` scopes activation addition to THIS request only: it overrides
@@ -627,7 +630,7 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 active_steer = None
         try:
             return _generate(messages, tools, max_new_tokens, temperature, notify,
-                             active_steer, tags, tool_choice)
+                             active_steer, tags, tool_choice, hierarchy)
         finally:
             for h in request_handles:
                 h.remove()
@@ -701,7 +704,7 @@ def _tool_scan(st: dict, text: str) -> None:
 
 
 def _generate(messages, tools, max_new_tokens, temperature, notify,
-              active_steer=None, tags=None, tool_choice=None):
+              active_steer=None, tags=None, tool_choice=None, hierarchy=None):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
@@ -789,6 +792,22 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
                         use_cache=True, **logits_kw)
             past = out.past_key_values
     state["in_prefill"] = False
+
+    # Instruction hierarchy (V-Steer). Runs on the finished prompt cache, before
+    # a single token is decoded: heads that took their cue from a demoted span
+    # get that span's cached V scaled down and the privileged span's scaled up.
+    # Unlike direction steering nothing is added to the residual stream, and
+    # because the edit stays in the cache the decode loop below is untouched.
+    hier_spec = hierarchy if hierarchy is not None else state.get("hierarchy")
+    gen["hierarchy"] = None
+    if hier_spec:
+        hplan = _vsteer.plan(tok, messages, hier_spec, prompt, ids[0].tolist())
+        h_out, h_report = _vsteer.apply(model, ids, past, hplan, logits_kw)
+        if h_out is not None:
+            out, past = h_out, h_out.past_key_values
+        gen["hierarchy"] = h_report
+        notify({"type": "hierarchy", **h_report})
+
     if state["device"] == "cuda":
         torch.cuda.empty_cache()   # drop prefill transients before decode
 
@@ -1000,7 +1019,7 @@ async def chat_completions(body: dict):
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
-        notify, steering, tags, body.get("tool_choice"))
+        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"))
     return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
 
 
@@ -2228,6 +2247,32 @@ async def steer(body: dict):
     # one spec {"name", "strength", "layer_from", "layer_to"} — or a composed
     # {"stack": [spec, ...]} applying several vectors at once (bake-recipe style)
     return apply_steering(body)
+
+
+@app.post("/hierarchy")
+async def set_hierarchy(body: dict):
+    """Global instruction-hierarchy spec — the /steer equivalent for V-Steer.
+
+        {"stale": [2, 3], "gamma_plus": 2.5, "gamma_minus": 0.75}
+
+    `stale` lists message indices that lost their authority: history written
+    before a system-prompt change. `privileged` defaults to every system
+    message. Post `{}` to switch it off. A per-request `"hierarchy"` object in
+    /v1/chat/completions overrides this for that call.
+
+    Nothing is validated here — the spans are located in the rendered chat
+    template, so a bad index simply matches no tokens and the edit is skipped.
+    """
+    spec = body if body.get("stale") else None
+    state["hierarchy"] = spec
+    return {"hierarchy": spec}
+
+
+@app.get("/hierarchy")
+async def get_hierarchy():
+    """Current spec plus the report from the last generation that used it."""
+    return {"hierarchy": state.get("hierarchy"),
+            "last": (state.get("gen") or {}).get("hierarchy")}
 
 
 @app.get("/")
