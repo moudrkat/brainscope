@@ -98,53 +98,6 @@ flowchart LR
 
 **Docs:** [Steering](docs/steering.md) · [Auditing baked personas](docs/auditing.md) · [J-lens](docs/jlens.md) · [Reasoning traces](docs/traces.md)
 
-## Instruction hierarchy
-
-A system prompt is supposed to outrank the conversation, and nothing in the
-architecture enforces that. Change a rule mid-product and the transcript still
-carries the old one — every message benign, just older than the policy.
-
-`POST /hierarchy {"stale": [1, 2], "gamma_plus": 2.5, "gamma_minus": 0.75}`
-(or the same object per request in `/v1/chat/completions`) marks which messages
-lost authority. After the prompt is prefilled, direct logit attribution asks
-each attention head whether it took its cue from the system prompt or from a
-demoted message, and the ones that got it backwards have their cached value
-vectors rescaled at those positions. The edit lives in the KV cache, so
-decoding costs nothing extra.
-
-![the hierarchy tab: a layer-by-head heatmap where orange marks heads that let the old messages outweigh the system prompt and blue marks heads where the system prompt won, with the rescaled head groups outlined; above it a line reading 22 of 48 head groups rescaled, 17 tokens boosted, 26 demoted](docs/hierarchy.jpg)
-
-The tab is the diagnosis, not the effect: orange heads are the ones handing
-authority to old messages. Outlined groups are the ones that got rescaled — the
-edit is per KV head, because that is the finest granularity the cache has.
-
-Defaults are the paper's and are a reasonable starting point. How much you
-recover varies a lot by rule — on one benchmark the same settings moved a
-casing conflict by 100 points and a JSON-vs-prose conflict by nothing. Turning
-`gamma_plus` far past the default degrades text rather than improving
-compliance, and a format checker will happily score the degraded output as a
-win, so read the output and not just the metric.
-
-The **demo app** (`/demo`) has the conflicts ready to load — a system rule, a
-pre-update message asking for the opposite, and the assistant having obeyed the
-old rule for a couple of turns. Pick one, hit send, tick *hierarchy fix*, and
-watch the answer and the tab change together. γ+ and γ− are editable there too.
-
-![the demo app with a loaded scenario: the system prompt says begin every reply with ACK, the conversation above shows a user asking for HELLO instead and the assistant obeying it, a divider marks where the system prompt changed, and controls for the hierarchy fix and both gamma parameters sit in the toolbar](docs/hierarchy-demo.jpg)
-
-There is no layer to choose. Direction steering asks you which layer to inject
-at; here the attribution picks the heads, wherever they are — on a 24-layer
-model a typical edit lands on a dozen head groups spread over most of the depth.
-
-Not a prompt-injection defence — the demoted messages here are benign.
-
-Method: **Steering Instruction Hierarchies at Inference Time** — Siqi Zeng,
-Sewoong Lee, Han Zhao, Julia Hockenmaier, arXiv:2607.26228, COLM 2026
-([code](https://github.com/cindy2000sh/v-steer)). The implementation here is
-written from the paper. A separate repo,
-[old-news](https://github.com/moudrkat/old-news), has the eval suite and the
-numbers behind the defaults.
-
 ## Quickstart
 
 ```bash
@@ -187,6 +140,21 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 ```
 
 ![The whole instrument: the model architecture on the left, the logit-lens grid open on the right, the generated answer below](docs/img/ui-overview.png)
+
+## The demo app
+
+If you don't want to point your own application at it yet, `/demo` is a
+stand-in: a chat page with an editable system prompt, the steering controls,
+and a dropdown of ready-made instruction-hierarchy conflicts. Same server, same
+`/v1`, so everything the instruments show is real — it just saves you wiring
+anything up first.
+
+Pick a conflict and it loads the whole setup: a system rule, a pre-update
+message asking for the opposite, and the assistant having obeyed the old rule
+for a couple of turns. Hit send, tick *hierarchy fix*, and watch the answer and
+the instruments change together. γ+ and γ− are editable in the toolbar.
+
+![the demo app with a loaded scenario: the system prompt says begin every reply with ACK, the conversation above shows a user asking for HELLO instead and the assistant obeying it, a divider marks where the system prompt changed, and controls for the hierarchy fix and both gamma parameters sit in the toolbar](docs/hierarchy-demo.jpg)
 
 ## What am I looking at?
 
@@ -338,6 +306,46 @@ model, so before steering anything real read the full guide:
 > **→ [docs/steering.md](docs/steering.md)** - the two extractors, the live
 > API (`/steer`, per-request, policies), a real case study, and the lessons we
 > learned the hard way.
+
+## Instruction hierarchy
+
+A system prompt is supposed to outrank the conversation, and nothing in the
+architecture enforces that. Change a rule mid-product and the transcript still
+carries the old one — every message benign, just older than the policy.
+
+`POST /hierarchy {"stale": [1, 2], "gamma_plus": 2.5, "gamma_minus": 0.75}`
+(or the same object per request in `/v1/chat/completions`) marks which messages
+lost authority. After the prompt is prefilled, direct logit attribution asks
+each attention head whether it took its cue from the system prompt or from a
+demoted message, and the ones that got it backwards have their cached value
+vectors rescaled at those positions. The edit lives in the KV cache, so
+decoding costs nothing extra.
+
+![the hierarchy tab: a layer-by-head heatmap where orange marks heads that let the old messages outweigh the system prompt and blue marks heads where the system prompt won, with the rescaled head groups outlined; above it a line reading 22 of 48 head groups rescaled, 17 tokens boosted, 26 demoted](docs/hierarchy.jpg)
+
+The tab is the diagnosis, not the effect: orange heads are the ones handing
+authority to old messages. Outlined groups are the ones that got rescaled — the
+edit is per KV head, because that is the finest granularity the cache has.
+
+Defaults are the paper's and are a reasonable starting point. How much you
+recover varies a lot by rule — on one benchmark the same settings moved a
+casing conflict by 100 points and a JSON-vs-prose conflict by nothing. Turning
+`gamma_plus` far past the default degrades text rather than improving
+compliance, and a format checker will happily score the degraded output as a
+win, so read the output and not just the metric.
+
+There is no layer to choose. Direction steering asks you which layer to inject
+at; here the attribution picks the heads, wherever they are — on a 24-layer
+model a typical edit lands on a dozen head groups spread over most of the depth.
+
+Not a prompt-injection defence — the demoted messages here are benign.
+
+Method: **Steering Instruction Hierarchies at Inference Time** — Siqi Zeng,
+Sewoong Lee, Han Zhao, Julia Hockenmaier, arXiv:2607.26228, COLM 2026
+([code](https://github.com/cindy2000sh/v-steer)). The implementation here is
+written from the paper. A separate repo,
+[old-news](https://github.com/moudrkat/old-news), has the eval suite and the
+numbers behind the defaults.
 
 ## Auditing baked personas
 

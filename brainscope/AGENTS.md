@@ -39,6 +39,22 @@ prefill is a much larger dose.
   default — attention capture costs memory.
 - `GET /directions` — list loaded directions. `POST /steer` — set a global
   steering state instead of per-request.
+- `POST /hierarchy` — instruction hierarchy (V-Steer, arXiv:2607.26228). Not a
+  direction: after prefill it asks each attention head whether it took its cue
+  from the system prompt or from a demoted span, and rescales the *cached V*
+  of the losers. Use it when a system prompt keeps losing to something a user
+  said earlier in the same conversation — the "we changed the rule, the
+  transcript didn't" case. The edit lives in the KV cache, so decoding costs
+  nothing extra.
+
+      {"stale": [2, 3], "gamma_plus": 2.5, "gamma_minus": 0.75}
+
+  `stale` = message indices that lost authority; `privileged` defaults to the
+  system messages. Same object per-request as `"hierarchy"` in
+  `/v1/chat/completions`. `GET /hierarchy` returns the spec plus the last
+  run's report (heads edited, tokens touched). Defaults are the paper's;
+  rules that only show up at the *end* of an answer often need `gamma_plus`
+  5-8, and past ~10 the model starts to degrade.
 - `POST /probes` — arm cheap activation probes: per-token scalar readouts
   (`h·v̂` or cosine) of one layer's residual against a loaded direction. They
   cost ~nothing and stay alive even with viz off, so they can screen every
