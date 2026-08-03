@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.0 (2026-08-03)
+
+- **Instruction-hierarchy steering** (`POST /hierarchy`, `GET /hierarchy`, and
+  a per-request `"hierarchy"` object in `/v1/chat/completions`): V-Steer,
+  arXiv:2607.26228. You ship a new system prompt and the conversation keeps
+  obeying the old one; mark the messages that lost authority with
+  `{"stale": [2, 3]}` and the attention heads still taking orders from them
+  get that span's cached V rescaled. Nothing is added to the residual stream
+  and nothing leaves the context. Prefill-only, so decoding runs at normal
+  speed.
+- **hierarchy tab**: the per-layer split of the last prompt position's
+  attention between the privileged and demoted spans, the per-head DLA scores
+  with the rescaled KV groups outlined, and a ranked list of the heads that
+  actually decided. The tab appears once a generation uses the feature.
+- `/demo` gains ready-made conflicts (prefix, casing, bullets, an inline
+  `[1] [2] [3]` option list), an "app updated here" divider that marks
+  everything above it as pre-update, and live γ+ / γ− controls — so the whole
+  thing can be reproduced by clicking rather than by writing code.
+- Self-disables with a reason on architectures it cannot support (KV shared
+  across layers, sliding-window attention), instead of producing quiet
+  nonsense.
+
 ## 0.2.2 (2026-07-30)
 
 - **Probe factory** (`POST /probes/train`): train your own probe from two
