@@ -57,7 +57,7 @@ class Plan:
     gamma_plus: float = GAMMA_PLUS
     gamma_minus: float = GAMMA_MINUS
     eps: float = 0.0
-    group_rule: str = "mean"
+    group_rule: str = "max"
 
     def ok(self) -> bool:
         return bool(self.boost and self.suppress)
@@ -109,7 +109,7 @@ def plan(tok, messages: list, spec: dict, prompt: str, prompt_ids) -> Plan:
                 gamma_plus=float(spec.get("gamma_plus", GAMMA_PLUS)),
                 gamma_minus=float(spec.get("gamma_minus", GAMMA_MINUS)),
                 eps=float(spec.get("eps", 0.0)),
-                group_rule=spec.get("group_rule", "mean"))
+                group_rule=spec.get("group_rule", "max"))
 
 
 @torch.no_grad()
@@ -164,11 +164,10 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
 
     # direct logit attribution of the token the model is about to write, split
     # per head into "came from the privileged span" vs "came from the demoted one"
+    # the bare unembedding row, matching the paper ("ignoring layer
+    # normalization") and their code: r_dirs = lm_head.weight[pred_ids]
     y = int(probe.logits[0, -1].argmax())
     r = model.lm_head.weight[y].detach().float()
-    norm_w = getattr(getattr(model, "model", model), "norm", None)
-    if norm_w is not None and hasattr(norm_w, "weight"):
-        r = r * norm_w.weight.detach().float()
 
     b_idx = torch.tensor(plan_.boost, device="cpu")
     s_idx = torch.tensor(plan_.suppress, device="cpu")
@@ -185,7 +184,9 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
     # the cache stores one V per KV head, shared by n_rep query heads, so the
     # edit cannot be finer than a group — reduce the group's scores first
     grouped = delta.view(len(layers), H_kv, n_rep)
-    score = grouped.max(-1).values if plan_.group_rule == "max" else grouped.mean(-1)
+    # union rule, paper Eq. (9): a KV head is steered if ANY query head in its
+    # group is bad. With eps=0 that is exactly max(group) > 0.
+    score = grouped.mean(-1) if plan_.group_rule == "mean" else grouped.max(-1).values
     mask = score > plan_.eps
 
     touched = 0

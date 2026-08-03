@@ -118,10 +118,12 @@ The tab is the diagnosis, not the effect: orange heads are the ones handing
 authority to old messages. Outlined groups are the ones that got rescaled — the
 edit is per KV head, because that is the finest granularity the cache has.
 
-Defaults are the paper's. Rules visible in the first token of the answer (a
-required prefix, casing, language) respond well; rules about how an answer
-*ends* need a much larger `gamma_plus`, and past ~10 the model starts producing
-degenerate text, so watch the output and not just your metric.
+Defaults are the paper's and are a reasonable starting point. How much you
+recover varies a lot by rule — on one benchmark the same settings moved a
+casing conflict by 100 points and a JSON-vs-prose conflict by nothing. Turning
+`gamma_plus` far past the default degrades text rather than improving
+compliance, and a format checker will happily score the degraded output as a
+win, so read the output and not just the metric.
 
 The **demo app** (`/demo`) has the conflicts ready to load — a system rule, a
 pre-update message asking for the opposite, and the assistant having obeyed the
