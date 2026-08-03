@@ -143,18 +143,17 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 
 ## The demo app
 
-If you don't want to point your own application at it yet, `/demo` is a
-stand-in: a chat page with an editable system prompt, the steering controls,
-and a dropdown of ready-made instruction-hierarchy conflicts. Same server, same
-`/v1`, so everything the instruments show is real — it just saves you wiring
-anything up first.
+`/demo` is a stand-in for your application: a chat page with an editable system
+prompt and the steering controls, served same-origin so it talks to `/v1`
+without any CORS setup. Open it in one tab and the instruments in another, and
+everything the instruments show is real traffic — it just saves you wiring up
+your own app first.
 
-Pick a conflict and it loads the whole setup: a system rule, a pre-update
-message asking for the opposite, and the assistant having obeyed the old rule
-for a couple of turns. Hit send, tick *hierarchy fix*, and watch the answer and
-the instruments change together. γ+ and γ− are editable in the toolbar.
-
-![the demo app with a loaded scenario: the system prompt says begin every reply with ACK, the conversation above shows a user asking for HELLO instead and the assistant obeying it, a divider marks where the system prompt changed, and controls for the hierarchy fix and both gamma parameters sit in the toolbar](docs/hierarchy-demo.jpg)
+Use it to poke at a behaviour you're chasing: set the system prompt that
+misbehaves, drive a steering vector from the slider, watch a probe fire. It also
+carries a set of ready-made instruction-hierarchy conflicts
+([below ↓](#instruction-hierarchy)) so that feature can be reproduced by
+clicking rather than by writing code.
 
 ## What am I looking at?
 
@@ -273,6 +272,25 @@ whenever the word is being emitted, both lenses see it.*
 > **→ [docs/traces.md](docs/traces.md)** - replay, the emergence chart and
 > its honest limits, the API, and storage costs.
 
+## Probes and the slop-o-meter
+
+A linear probe on the residual stream, read per token, costing nothing:
+`POST /probes` arms one against a loaded direction and it keeps scoring even
+with the visualisation off, so it can screen real traffic rather than a
+benchmark. Give it a `threshold` and `"trip": "viz"` and the full instruments
+switch themselves on the moment it fires — screen everything cheaply, look
+closely only at the hits.
+
+`POST /probes/train` builds one from two contrast personas without any external
+tooling: the server generates the answers, extracts the diff-of-means direction
+from their activations, reports holdout AUC and a calibrated threshold, and
+arms the probe if you ask it to.
+
+The worked example is the **slop-o-meter** — a probe that scores how far a reply
+has drifted into generic filler register, written up with the structure of a
+bank's model validation at toy scale:
+[docs/slopometer.md](docs/slopometer.md).
+
 ## Steering
 
 Extract a direction from contrast pairs and drive it live - activation
@@ -337,6 +355,8 @@ win, so read the output and not just the metric.
 There is no layer to choose. Direction steering asks you which layer to inject
 at; here the attribution picks the heads, wherever they are — on a 24-layer
 model a typical edit lands on a dozen head groups spread over most of the depth.
+
+![the demo app with a loaded scenario: the system prompt says begin every reply with ACK, the conversation above shows a user asking for HELLO instead and the assistant obeying it, a divider marks where the system prompt changed, and controls for the hierarchy fix and both gamma parameters sit in the toolbar](docs/hierarchy-demo.jpg)
 
 Not a prompt-injection defence — the demoted messages here are benign.
 
