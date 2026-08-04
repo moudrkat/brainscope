@@ -331,6 +331,13 @@ A system prompt is supposed to outrank the conversation, and nothing in the
 architecture enforces that. Change a rule mid-product and the transcript still
 carries the old one — every message benign, just older than the policy.
 
+**Try it without writing anything.** `brainscope --model tiny`, open `/demo`,
+pick a conflict from the dropdown (prefix, casing, bullets, or an inline
+`[1] [2] [3]` option list), press the button that marks where the app updated,
+and tick the hierarchy box. The instruments tab appears next to the others once
+the first steered reply comes back.
+
+To wire it into your own app instead:
 `POST /hierarchy {"stale": [1, 2], "gamma_plus": 2.5, "gamma_minus": 0.75}`
 (or the same object per request in `/v1/chat/completions`) marks which messages
 lost authority. After the prompt is prefilled, direct logit attribution asks
