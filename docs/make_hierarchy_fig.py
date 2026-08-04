@@ -73,8 +73,11 @@ def main():
                          "the one with the hierarchy tab?")
     mass = rep["mass"]
     old, new = mass["stale"], mass["system"]
+    old_a, new_a = mass["stale_after"], mass["system_after"]
     xs = list(range(len(old)))
-    ratio = (sum(old) / len(old)) / max(sum(new) / len(new), 1e-9)
+    mean = lambda v: sum(v) / len(v)
+    ratio = mean(old) / max(mean(new), 1e-9)
+    ratio_a = mean(old_a) / max(mean(new_a), 1e-9)
 
     plt.rcParams["font.sans-serif"] = ["DejaVu Sans", "system-ui", "sans-serif"]
     fig = plt.figure(figsize=(11, 6.2), dpi=160)
@@ -98,6 +101,12 @@ def main():
     ax.set_axisbelow(True)
     ax.tick_params(colors=MUTED, labelsize=10, length=0)
 
+    # dashed = the same split once the value multipliers are folded in. Without
+    # these the figure only shows the problem, and the post claims a fix.
+    ax.plot(xs, old_a, color=OLD, linewidth=1.6, linestyle=(0, (4, 3)),
+            alpha=0.75, zorder=2)
+    ax.plot(xs, new_a, color=NEW, linewidth=1.6, linestyle=(0, (4, 3)),
+            alpha=0.75, zorder=2)
     ax.plot(xs, old, color=OLD, linewidth=2.5, zorder=3)
     ax.plot(xs, new, color=NEW, linewidth=2.5, zorder=3)
 
@@ -110,6 +119,9 @@ def main():
     j = int(len(new) * 0.62)
     ax.text(xs[j], new[j] + 0.028, "the current system prompt",
             color=NEW, fontsize=12.5, fontweight="700", ha="center", va="bottom")
+    ax.text(xs[int(len(xs) * 0.30)], max(max(old), max(new)) * 1.20,
+            "dashed = after the edit", color=INK2, fontsize=11,
+            fontweight="700", ha="center")
 
     ax.set_ylim(0, max(max(old), max(new)) * 1.38)
     ax.yaxis.set_major_formatter(lambda v, _: f"{v * 100:.0f}%")
@@ -119,8 +131,8 @@ def main():
                   "left)", color=INK2, fontsize=10.5, labelpad=9)
 
     fig.text(0.085, 0.075,
-             f"The old message took {ratio:.1f}× more of the model's "
-             f"attention than the system prompt.",
+             f"Before: {ratio:.1f}× toward the old message. "
+             f"After the edit: {ratio_a:.1f}× — it flips.",
              fontsize=12.5, color=INK, fontweight="700")
     fig.text(0.085, 0.028,
              "Qwen3-4B-Instruct-2507 · one conversation · brainscope",
