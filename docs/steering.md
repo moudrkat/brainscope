@@ -200,6 +200,15 @@ hotwire-vLLM server steers brainscope unchanged. The legacy
   (default on: JSON syntax stays well-formed, the persona speaks only
   inside argument string values).
 
+> **`syntax_mute` is brainscope-only.** hotwire-vLLM parses a request spec
+> into `SteerSpec(vector_id, layer, scale)` (`hotwire/wire.py`) and drops
+> every other key, so on a hotwire server the flag is a **silent no-op** —
+> no error, no warning, and the function name and JSON keys are inside the
+> steered span like everything else. `decode_only` *is* honoured there
+> (`hotwire/_patch.py`). A spec that behaves one way in the lab and another
+> way in production is the failure this whole page exists to prevent, so
+> check it rather than assume it.
+
 **Export with a passport:** `python -m brainscope.export_hotwire --dirs
 dirs.json --out ./vectors` writes hotwire-ready `.pt` files plus a
 `manifest.json` recording shape, norms, model, and the calibration regime —
@@ -208,4 +217,8 @@ a vector should never travel without its regime again.
 **Parity check:** `python -m brainscope.parity` sends the same prompts and
 spec to a brainscope and a hotwire server and compares the behavior — the
 cheap standing guard against the two backends' steering semantics drifting
-apart.
+apart. It also asks each backend **whether it implements `syntax_mute` at
+all**, by sending one tool-call request twice with the flag flipped: a
+backend that implements it answers differently, one that drops it answers
+identically. Neutral prompts cannot test this — the mute only engages inside
+a tool call, which is why the divergence above went unnoticed for months.
