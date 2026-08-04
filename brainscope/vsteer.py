@@ -58,6 +58,7 @@ class Plan:
     gamma_minus: float = GAMMA_MINUS
     eps: float = 0.0
     group_rule: str = "max"
+    edit_suppress: bool = True   # False = compare against it, don't rescale it
 
     def ok(self) -> bool:
         return bool(self.boost and self.suppress)
@@ -71,6 +72,11 @@ def plan(tok, messages: list, spec: dict, prompt: str, prompt_ids) -> Plan:
        "privileged": [0],          # defaults to every system message
        "gamma_plus": 2.5, "gamma_minus": 0.75, "eps": 0}
 
+    or, for a conflict inside a single message:
+
+      {"boost_text": ["YOU CANNOT CREATE TASKS ..."],
+       "suppress_text": ["### Character: taskie ..."]}
+
     Only message *content* is marked; role headers and template scaffolding are
     left alone, which is the paper's V-Simple span strategy (whole message, no
     extraction) and the one that held up in testing.
@@ -78,6 +84,14 @@ def plan(tok, messages: list, spec: dict, prompt: str, prompt_ids) -> Plan:
     stale = set(spec.get("stale") or [])
     priv = set(spec.get("privileged") or
                [i for i, m in enumerate(messages) if m.get("role") == "system"])
+    # Substring spans, for conflicts that live *inside* one message. A 12k-token
+    # agent system prompt can carry both a rule and a block arguing against it,
+    # and message-level marking cannot express that. Given either list, the
+    # message-level defaults are dropped -- you asked for something narrower.
+    boost_text = [s for s in (spec.get("boost_text") or []) if s]
+    suppress_text = [s for s in (spec.get("suppress_text") or []) if s]
+    if boost_text or suppress_text:
+        priv, stale = set(), set()
 
     enc = tok(prompt, add_special_tokens=False, return_offsets_mapping=True)
     offsets = list(enc["offset_mapping"])
@@ -105,7 +119,34 @@ def plan(tok, messages: list, spec: dict, prompt: str, prompt_ids) -> Plan:
         elif i in priv:
             boost += idx
 
+    def _spans(needles: list[str]) -> list[int]:
+        out: list[int] = []
+        for needle in needles:
+            start = prompt.find(needle)
+            while start >= 0:
+                end = start + len(needle)
+                out += [j for j in range(n)
+                        if offsets[j][1] > start and offsets[j][0] < end
+                        and offsets[j][1] > offsets[j][0]]
+                start = prompt.find(needle, end)
+        return out
+
+    boost += _spans(boost_text)
+    suppress += _spans(suppress_text)
+
+    # Boost-only: you name the rule, nothing else. Head selection still needs
+    # something to compare against, so the comparison span becomes "everything
+    # else in the prompt" -- which is the honest reading of "the rest of the
+    # context is outvoting this instruction", and avoids trying to enumerate
+    # every span that argues the other way (in a 12k agent prompt there are
+    # dozens, and the list is never complete). Only the named span is rescaled.
+    if boost and not suppress:
+        marked = set(boost)
+        suppress = [j for j in range(n) if j not in marked
+                    and offsets[j][1] > offsets[j][0]]
+
     return Plan(boost=boost, suppress=suppress,
+                edit_suppress=not (boost_text and not suppress_text),
                 gamma_plus=float(spec.get("gamma_plus", GAMMA_PLUS)),
                 gamma_minus=float(spec.get("gamma_minus", GAMMA_MINUS)),
                 eps=float(spec.get("eps", 0.0)),
@@ -195,8 +236,10 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
         if not heads.numel():
             continue
         v = past.layers[l].values
-        for idx, m in ((plan_.boost, 1.0 + plan_.gamma_plus),
-                       (plan_.suppress, 1.0 - plan_.gamma_minus)):
+        edits = [(plan_.boost, 1.0 + plan_.gamma_plus)]
+        if plan_.edit_suppress:
+            edits.append((plan_.suppress, 1.0 - plan_.gamma_minus))
+        for idx, m in edits:
             if m == 1.0 or not idx:
                 continue
             pos = torch.tensor(idx, device=v.device)
@@ -234,7 +277,9 @@ def apply(model, ids, past, plan_: Plan, logits_kw=None):
         "n_rep": n_rep,
         "boost_tokens": len(plan_.boost), "suppress_tokens": len(plan_.suppress),
         "values_touched": touched,
-        "gamma_plus": plan_.gamma_plus, "gamma_minus": plan_.gamma_minus,
+        "gamma_plus": plan_.gamma_plus,
+        "gamma_minus": plan_.gamma_minus if plan_.edit_suppress else 0.0,
+        "edit_suppress": plan_.edit_suppress,
         "delta": [[round(x, 4) for x in row] for row in delta.tolist()],
         "mass": mass,
     }
