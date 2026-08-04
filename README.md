@@ -339,7 +339,9 @@ demoted message, and the ones that got it backwards have their cached value
 vectors rescaled at those positions. The edit lives in the KV cache, so
 decoding costs nothing extra.
 
-![the hierarchy tab on Qwen3-4B: two lines across all 36 layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages, with the old messages taking 4.4 times more of it, and dashed lines showing the ordering reversing once the value multipliers are applied](docs/hierarchy.jpg)
+![the hierarchy tab on Qwen3-4B: two lines across all 36 layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages, with the old messages taking 10.1 times more of it](docs/hierarchy.jpg)
+
+Rebuild it with `python docs/make_hierarchy_fig.py` against a running brainscope — the numbers come from the `/hierarchy` report, not from a saved copy.
 
 The tab is the diagnosis, not the effect: orange heads are the ones handing
 authority to old messages. Outlined groups are the ones that got rescaled — the
