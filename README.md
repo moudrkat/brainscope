@@ -143,6 +143,10 @@ client = OpenAI(base_url="http://localhost:8010/v1", api_key="unused")
 
 ## The demo app
 
+```bash
+brainscope --model tiny        # then open http://127.0.0.1:8010/demo
+```
+
 `/demo` is a stand-in for your application: a chat page with an editable system
 prompt and the steering controls, served same-origin so it talks to `/v1`
 without any CORS setup. Open it in one tab and the instruments in another, and
@@ -255,6 +259,10 @@ up). Verify any of it against the trace with
 
 ## Reasoning traces
 
+```bash
+brainscope --model mid --traces ./traces
+```
+
 With `--traces DIR` every generation is persisted and replayable token by
 token — the `<think>` block segmented out, both lens columns per step, and
 an **answer-emergence chart**: for the token that opens the final answer
@@ -274,6 +282,12 @@ whenever the word is being emitted, both lenses see it.*
 
 ## Probes and the slop-o-meter
 
+```bash
+# no probe file yet? POST /probes/train builds one from two contrast
+# personas and hands back the JSON — no external tooling needed
+brainscope --model tiny --probes probes.json
+```
+
 A linear probe on the residual stream, read per token, costing nothing:
 `POST /probes` arms one against a loaded direction and it keeps scoring even
 with the visualisation off, so it can screen real traffic rather than a
@@ -292,6 +306,12 @@ bank's model validation at toy scale:
 [docs/slopometer.md](docs/slopometer.md).
 
 ## Steering
+
+```bash
+# dirs.json comes from hidden-directions (pip install hidden-directions),
+# or from /capture if you are steering one agent by another
+brainscope --model mid --directions dirs.json
+```
 
 Extract a direction from contrast pairs and drive it live - activation
 addition (Turner et al., arXiv:2308.10248) on real traffic: from a slider,
@@ -331,7 +351,11 @@ A system prompt is supposed to outrank the conversation, and nothing in the
 architecture enforces that. Change a rule mid-product and the transcript still
 carries the old one — every message benign, just older than the policy.
 
-**Try it without writing anything.** `brainscope --model tiny`, open `/demo`,
+```bash
+brainscope --model tiny        # then open http://127.0.0.1:8010/demo
+```
+
+**No code needed.** Open `/demo`,
 pick a conflict from the dropdown (prefix, casing, bullets, or an inline
 `[1] [2] [3]` option list), press the button that marks where the app updated,
 and tick the hierarchy box. The instruments tab appears next to the others once
@@ -377,6 +401,12 @@ written from the paper. A separate repo,
 numbers behind the defaults.
 
 ## Auditing baked personas
+
+```bash
+# persona.json names the two personas to compare; the server does the
+# extraction itself, a blank pairs.jsonl is enough to start
+brainscope --model mid --bake persona.json
+```
 
 A 9 KB weights patch - one MLP bias - can turn a model into a covert advocate
 (a flat-earther, a sycophant) with **no runtime steering active**. brainscope
