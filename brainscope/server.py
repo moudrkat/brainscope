@@ -909,6 +909,10 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             gen["tokens"].append(piece)
             gen["norms"].append(norms)
         notify(payload)
+        # cinema mode: pace the decode to a slower clock (e.g. an edge device
+        # running the same weights), so the viz unfolds in sync with it
+        if state.get("pace"):
+            time.sleep(state["pace"])
         generated.append(int(next_id))
         ids = torch.cat([ids, next_id.reshape(1, 1)], dim=1)
         if int(next_id) == tok.eos_token_id or state.get("stop"):
@@ -2343,8 +2347,14 @@ def main() -> None:
                         help="max stored traces before the oldest are dropped")
     parser.add_argument("--quantize", choices=["8bit", "4bit"], default=None,
                         help="bitsandbytes quantization to fit bigger models on 16 GB")
+    parser.add_argument("--pace", type=float, default=0.0,
+                        help="seconds to sleep per generated token - cinema mode. "
+                             "Slows decoding to a chosen clock, e.g. to run in "
+                             "lockstep with an edge device executing the same "
+                             "weights, or just to watch a thought in slow motion")
     parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args()
+    state["pace"] = max(0.0, args.pace)
     if args.guide:
         _print_guide(); return
 
