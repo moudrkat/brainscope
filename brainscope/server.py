@@ -444,6 +444,17 @@ def _logit_lens(hs: torch.Tensor, top: int = 5):
     return _topk_readout(hs, top, last_normed=True)
 
 
+def _residual_top(hs: torch.Tensor, k: int = 12):
+    """The k largest components of the residual stream at each layer, with their
+    indices. A handful of fixed coordinates carry values orders of magnitude
+    above the rest (massive activations, Sun et al. 2024, arXiv:2402.17762), so
+    the index is the informative half — it is the same dimension layer after
+    layer."""
+    _, idx = hs.abs().topk(min(k, hs.shape[-1]), dim=-1)
+    return [[[int(j), round(float(hs[l, j]), 2)] for j in idx[l].tolist()]
+            for l in range(hs.shape[0])]
+
+
 def _jlens_readout(hs: torch.Tensor, top: int = 5):
     """What each layer is disposed to make the model say LATER: the hidden
     state transported into final-layer space by the fitted averaged Jacobian
@@ -475,7 +486,7 @@ def _attn_signals(attentions, gen: dict):
     summaries (entropy of the mean pattern, argmax position, per-head entropy)
     for the websocket stream.
     """
-    entropy, top, head_entropy, mean_rows, head_rows = [], [], [], [], []
+    entropy, top, head_entropy, head_sink, mean_rows, head_rows = [], [], [], [], [], []
     for a in attentions:
         w = a[0, :, -1, :].float()          # [heads, seq]
         mean = w.mean(0)                    # [seq]
@@ -484,12 +495,13 @@ def _attn_signals(attentions, gen: dict):
         head_rows.append((w * 255).round().clamp(0, 255).to(torch.uint8).cpu().numpy().tobytes())
         he = -(w * (w + 1e-9).log()).sum(-1) / log_seq          # [heads], 0..1
         head_entropy.append([round(float(x), 3) for x in he])
+        head_sink.append([round(float(x), 4) for x in w[:, 0]])
         me = -(mean * (mean + 1e-9).log()).sum() / log_seq
         entropy.append(round(float(me), 3))
         top.append(int(mean.argmax()))
     gen["attn_rows"].append(mean_rows)
     gen["last_heads"] = head_rows           # only the newest token, per layer
-    return entropy, top, head_entropy
+    return entropy, top, head_entropy, head_sink
 
 
 def _match_policy(tags: dict) -> dict | None:
@@ -898,14 +910,17 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
                 lens = _logit_lens(hs)
                 payload["lens"] = lens
                 gen["lens"].append(lens)
+            if state["viz"]:
+                payload["res"] = _residual_top(hs)
             if state["jlens"] is not None and state["jlens_on"]:
                 jlens = _jlens_readout(hs)
                 payload["jlens"] = jlens
                 gen["jlens"].append(jlens)
             if out.attentions:
-                entropy, top, head_entropy = _attn_signals(out.attentions, gen)
+                entropy, top, head_entropy, head_sink = _attn_signals(out.attentions, gen)
                 payload.update({"attn_entropy": entropy, "attn_top": top,
-                                "head_entropy": head_entropy})
+                                "head_entropy": head_entropy,
+                                "head_sink": head_sink})
             gen["tokens"].append(piece)
             gen["norms"].append(norms)
         notify(payload)
