@@ -323,8 +323,9 @@ flowchart LR
 ```
 
 The best source of vectors is the sister repo
-[hidden-directions](https://github.com/moudrkat/hidden-directions): a
-40-direction catalogue (three with verified live settings) to load as-is, plus the pipeline to extract
+[hidden-directions](https://github.com/moudrkat/hidden-directions): 40
+pre-verified directions to load as-is (each behaviorally checked at
+extraction; three also calibrated through its full eval), plus the pipeline to extract
 more and the references behind the method - often the better place to start
 than a blank `pairs.jsonl` (see [Auditing baked personas](#auditing-baked-personas)).
 
