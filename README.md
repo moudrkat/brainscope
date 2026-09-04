@@ -29,8 +29,9 @@ pip install brainscope && brainscope --model tiny --lens on   # 0.5B model, CPU 
 ```
 
 Open the page it launches, type in the built-in chat box, and watch each word
-surface through the layers *before* the model writes it. No app to wire up,
-no card required. ([full quickstart ↓](#quickstart))
+surface through the layers *before* the model writes it (a raw logit lens,
+so the middle of the stack is approximate). No app to wire up, no card
+required. ([full quickstart ↓](#quickstart))
 
 What it does:
 
@@ -49,28 +50,21 @@ What it does:
   ([docs](docs/steering.md)).
 - **Put the system prompt back on top** — instruction-hierarchy steering
   (V-Steer, arXiv:2607.26228). You ship a new system prompt, the conversation
-  keeps obeying the old one. `POST /hierarchy {"stale": [2,3]}` marks the
-  messages that lost authority, and the heads still taking orders from them get
-  that span's *cached V* scaled down. Nothing is added to the residual stream
-  and nothing leaves the context — the old messages stay readable, they just
-  stop giving orders. The **hierarchy** tab shows which head listened to which
+  keeps obeying the old one: mark the messages that lost authority and the
+  heads still taking orders from them get that span's *cached V* scaled down.
+  The **hierarchy** tab shows which head listened to which
   ([details ↓](#instruction-hierarchy)).
 - **Watch steering reroute attention** — the forced replay can also report
   per-head attention divergence between clean and steered passes (JSD +
   focus-mass delta, the rerouting signature from arXiv 2605.06342): pass
   `"attn_divergence": true` on `/replay` with `forced: true`.
-- **Screen every token for ~free — activation probes** — the pattern
-  frontier labs deployed on their production traffic in 2026 (a linear
-  probe on activations screens everything, expensive checks run only on
-  hits), reproducible at home: `POST /probes` arms per-token scalar
-  readouts of the residual stream against your extracted directions.
-  Probes stay alive even with the visualization off, and a probe with a
-  `threshold` and `"trip": "viz"` flips the full instruments on the
-  moment it fires. Train your own with one request — `POST /probes/train`
-  generates contrast answers, extracts the direction and reports holdout
-  AUC so you know whether your meter measures signal or noise. Worked
-  example with a banking-style validation note: the slop-o-meter
-  ([docs/slopometer.md](docs/slopometer.md)).
+- **Screen every token for ~free — activation probes** — a linear probe
+  on activations screens everything, expensive checks run only on hits:
+  per-token scalar readouts against your directions that stay alive with
+  the visualization off and can flip the full instruments on the moment
+  they fire. Train your own with one request, with holdout AUC so you know
+  whether the meter measures signal or noise
+  ([details ↓](#probes-and-the-slop-o-meter)).
 - **Watch words surface before they're written** — a
   [J-lens](#j-lens-reading-ahead-of-the-output) (Jacobian lens, Anthropic
   2026) readout next to the logit lens: words represented and pushed toward
@@ -95,14 +89,13 @@ flowchart LR
 
 ![brainscope demo](docs/demo.gif)
 
-**Docs:** [Steering](docs/steering.md) · [Auditing baked personas](docs/auditing.md) · [J-lens](docs/jlens.md) · [Reasoning traces](docs/traces.md)
+**Docs:** [Steering](docs/steering.md) · [Auditing baked personas](docs/auditing.md) · [J-lens](docs/jlens.md) · [Reasoning traces](docs/traces.md) · [Slop-o-meter](docs/slopometer.md)
 
 ## Quickstart
 
 ```bash
-git clone https://github.com/moudrkat/brainscope && cd brainscope
-pip install -e .                     # needs Python 3.11+
-brainscope --model tiny              # 0.5B, runs on CPU - good first try
+pip install brainscope               # needs Python 3.11+ (clone the repo only for examples/)
+brainscope --model tiny --lens on    # 0.5B, runs on CPU - good first try
 # → your app:  http://<host>:8010/v1   (chat completions, incl. tool calls)
 # → your eyes: http://<host>:8010      (opens automatically)
 ```
@@ -330,8 +323,8 @@ flowchart LR
 ```
 
 The best source of vectors is the sister repo
-[hidden-directions](https://github.com/moudrkat/hidden-directions): 40
-pre-verified directions to load and use as-is, plus the pipeline to extract
+[hidden-directions](https://github.com/moudrkat/hidden-directions): a
+40-direction catalogue (three with verified live settings) to load as-is, plus the pipeline to extract
 more and the references behind the method - often the better place to start
 than a blank `pairs.jsonl` (see [Auditing baked personas](#auditing-baked-personas)).
 
@@ -373,9 +366,9 @@ demoted message, and the ones that got it backwards have their cached value
 vectors rescaled at those positions. The edit lives in the KV cache, so
 decoding costs nothing extra.
 
-![the hierarchy tab on Qwen3-4B: two lines across all 36 layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages, with the old messages taking 10.1 times more of it](docs/hierarchy.jpg)
+![the hierarchy tab on Qwen3-4B: two lines across all 36 layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages](docs/hierarchy.jpg)
 
-Rebuild it with `python docs/make_hierarchy_fig.py` against a running brainscope (`BRAINSCOPE_BASE` picks the server, default `http://localhost:8010`) — the numbers come from the `/hierarchy` report, not from a saved copy.
+*Qwen3-4B, the hierarchy tab: across all 36 layers, how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages. The old messages take 10.1× more of it. Rebuild with `python docs/make_hierarchy_fig.py` against a running brainscope (`BRAINSCOPE_BASE` picks the server); the numbers come from the `/hierarchy` report, not from a saved copy.*
 
 The tab is the diagnosis, not the effect: orange heads are the ones handing
 authority to old messages. Outlined groups are the ones that got rescaled — the
@@ -433,7 +426,7 @@ generation with the opening of a tool call in the model's own format.
 
 Honest limitations: generation runs on plain `transformers` - tens of tokens
 per second, one request at a time, no auth, context bounded by VRAM. Why not
-vLLM? vLLM is a black box by design - per-layer states are consumed the
+vLLM? vLLM doesn't expose per-layer states - they are consumed the
 moment they're produced; `transformers` exposes them for every architecture
 with one flag. That's the trade: brainscope is slower, but it sees
 everything. It's a lab instrument for development - run it next to
@@ -452,7 +445,8 @@ flowchart LR
     on["📰 old-news<br/>stale history vs system prompt"]
 
     hd -->|vectors| bs
-    hd -->|vector + passport| hw
+    hd -->|vector| hw
+    bs -->|vector + passport| hw
     bs --> st
     bs --> tm
     bs -->|causal replay| sm
@@ -473,15 +467,18 @@ flowchart LR
     class bs here;
 ```
 
-*Highlighted = this repo. The full lab map (with the two other repos' stories) lives on [moudrkat](https://github.com/moudrkat).*
+*Highlighted = this repo. The full lab map (with the other repos' stories) lives on [moudrkat](https://github.com/moudrkat).*
 
-brainscope is the middle of a three-repo stack; each piece also runs alone:
+brainscope is the instrument in the middle; each piece also runs alone:
 
 - **[hidden-directions](https://github.com/moudrkat/hidden-directions)** —
-  the direction catalogue: extract, bake, and audit steering directions,
-  per model. Where the vectors come from.
+  the vector factory: extract, bake, audit and calibrate steering
+  directions, per model. Where the vectors come from.
 - **brainscope** *(you are here)* — the instrument: hosts the model,
   captures activations, steers at runtime, reads the J-lens, keeps traces.
+- **[hotwire-vllm](https://github.com/moudrkat/hotwire-vllm)** — the same
+  steering spec in production vLLM, CUDA graphs intact. Calibrate here,
+  deploy there.
 - **[steeropathy](https://github.com/moudrkat/steeropathy)** — the lab on
   top: agents that communicate through activations and J-space instead of
   text, brainscope as their only channel.
