@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.4.1 (2026-09-04)
+
+- The viz websocket now also carries the twelve largest components of the
+  residual stream at each layer (with their indices) and each head's attention
+  mass on token 0 (the sink). Both were already computed for the lens and the
+  per-head entropy; a client can now draw the residual stream and the sink
+  without polling `/gen/heads` per layer.
+- Model loading passes `dtype` instead of the deprecated `torch_dtype`
+  (transformers ≥ 4.56 is now the floor).
+- Docs: the README commands are copy-pasteable again (`--model mid` was never
+  a preset; `--bake` takes a bake artifact folder; the CPU quickstart needs
+  `--lens on`), `stream: true` is documented as ignored rather than
+  unsupported, and the agent guide gains the CLI flags, env knobs and the
+  read-only `/gen*` / traces API. CI checks the packaged guide matches the
+  repo copy.
+
+## 0.4.0 (2026-08-07)
+
+- **`--pace SECONDS`** (cinema mode): slow decoding to an external clock, so a
+  generation can be watched token by token or synced to a slower device.
+- **ESP32 matchbox LLM example** (`examples/esp32/`): the whole instrument
+  driving a tiny model as if it lived on a microcontroller — no hardware
+  needed.
+- **Parity probe for `syntax_mute`**: `brainscope.parity` now first checks
+  whether a backend implements `syntax_mute` at all before comparing outputs
+  (hotwire-vllm drops the flag silently, which used to look like a mismatch).
+- **V-Steer substring spans**: a hierarchy conflict that lives *inside* one
+  message can be marked as a substring span instead of a whole message, and
+  the per-conflict figures are generated per conflict.
+- **Release pipeline**: pushing a `v*` tag builds, verifies (wheel must carry
+  the static UI) and publishes to PyPI via Trusted Publishing; the build fails
+  if the tag and `pyproject.toml` disagree about the version.
+- README: hierarchy figure rebuilt from Qwen3-4B with a script that
+  regenerates it, every instrument section says how to run it, lab map gains
+  old-news.
+
 ## 0.3.0 (2026-08-03)
 
 - **Instruction-hierarchy steering** (`POST /hierarchy`, `GET /hierarchy`, and

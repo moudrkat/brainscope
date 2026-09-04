@@ -106,7 +106,7 @@ def load_model(name: str, device: str | None, quantize: str | None = None) -> No
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     # eager attention so output_attentions really returns weights (sdpa/flash
     # never materialize them) — brainscope trades speed for sight everywhere
-    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32,
+    kwargs = {"dtype": torch.bfloat16 if dev == "cuda" else torch.float32,
               "attn_implementation": "eager"}
     if quantize:  # fit bigger models on a 16 GB card at some quality cost
         from transformers import BitsAndBytesConfig
@@ -730,8 +730,8 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # tool-call opening into the prompt → the model can't emit <think> first, so
     # its reasoning is suppressed. With tool_choice={"...", "after_think": true}
     # we let the model reason freely, then inject the forced prefix right after
-    # </think> (below, in the decode loop) so the structured tool call (e.g.
-    # SuggestMessages) is still guaranteed — reason first, THEN the buttons.
+    # </think> (below, in the decode loop) so the structured tool call is
+    # still guaranteed — reason first, THEN the tool call.
     after_think = isinstance(tool_choice, dict) and tool_choice.get("after_think")
     forced_prefix = ""
     if tools and tool_choice and tool_choice not in ("none", "auto"):
@@ -933,8 +933,8 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         if int(next_id) == tok.eos_token_id or state.get("stop"):
             break
         # think-then-tool: once reasoning closes, inject the forced tool-call
-        # opening so the model MUST complete the structured call (e.g.
-        # SuggestMessages) — reasoning preserved, buttons guaranteed.
+        # opening so the model MUST complete the structured call — reasoning
+        # preserved, tool call guaranteed.
         if inject_after_think and "</think>" in "".join(gen["all_tokens"]):
             fp_ids = tok(inject_after_think, return_tensors="pt",
                          add_special_tokens=False).input_ids.to(state["device"])
