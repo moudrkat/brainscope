@@ -25,7 +25,7 @@ def extract(model_name: str, pairs: list[dict], layer: int, device: str | None, 
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(model_name)
-    kwargs = {"torch_dtype": torch.bfloat16 if dev == "cuda" else torch.float32}
+    kwargs = {"dtype": torch.bfloat16 if dev == "cuda" else torch.float32}
     if quantize:  # same trick as server.load_model: fit big models on 16 GB
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = (

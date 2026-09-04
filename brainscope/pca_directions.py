@@ -95,7 +95,7 @@ def main() -> None:
     model_id = PRESETS.get(args.model, args.model)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(model_id)
-    kwargs: dict = {"torch_dtype": torch.bfloat16 if device == "cuda" else torch.float32}
+    kwargs: dict = {"dtype": torch.bfloat16 if device == "cuda" else torch.float32}
     if args.quantize:
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = BitsAndBytesConfig(

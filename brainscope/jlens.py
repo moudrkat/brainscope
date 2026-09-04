@@ -349,7 +349,7 @@ def _cmd_fit(args) -> None:
     dtype = torch.bfloat16 if device == "cuda" else torch.float32
     tok = AutoTokenizer.from_pretrained(model_id)
     # sdpa attention: fitting needs gradients, not attention weights — take the speed
-    kwargs = {"torch_dtype": dtype, "attn_implementation": "sdpa"}
+    kwargs = {"dtype": dtype, "attn_implementation": "sdpa"}
     if getattr(args, "quantize", None):  # input-grads flow through bnb linears
         from transformers import BitsAndBytesConfig
         kwargs["quantization_config"] = (
