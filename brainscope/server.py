@@ -1828,7 +1828,7 @@ def load_direction_dict(path: Path) -> dict:
 @app.post("/capture")
 async def capture(body: dict):
     """Read a prompt's residual-stream state at one layer — the raw material for
-    agent-to-agent 'telepathy': capture agent A's state here, POST it to
+    agent-to-agent activation transfer: capture agent A's state here, POST it to
     /directions, then steer agent B by it (per-request or /steer).
 
     {"messages": [...], "layer": int?, "pool": "mean"|"last"?} ->
