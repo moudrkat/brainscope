@@ -830,6 +830,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # False and steering behaves normally.
     state["in_think"] = any((s or {}).get("answer_only") for s in (active_steer or [])) \
         and "</think>" not in "".join(gen["all_tokens"])
+    pending_ids: list[int] = []   # byte-level tokens of one unfinished character
     for step in range(max_new_tokens):
         if state.get("in_think") and "</think>" in "".join(gen["all_tokens"]):
             state["in_think"] = False    # reasoning finished → steer the answer now
@@ -848,7 +849,17 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             next_id = torch.multinomial(probs, 1)
         else:
             next_id = logits.argmax().reshape(1)
-        piece = tok.decode(next_id)
+        # Emoji and some CJK arrive as several byte-level tokens; decoded one
+        # at a time each is U+FFFD. Hold the bytes back and attach the finished
+        # character to the token that completes it — one span per token for
+        # the instruments, readable text for the answer and the traces. (The
+        # API response is decoded from the whole id sequence and never saw this.)
+        pending_ids.append(int(next_id))
+        piece = tok.decode(pending_ids)
+        if piece.endswith("\ufffd") and len(pending_ids) < 4:
+            piece = ""
+        else:
+            pending_ids = []
         # steering is muted while the model writes tool-call scaffolding — a
         # persona vector strong enough to matter corrupts strict JSON syntax.
         # Inside the string values of "arguments" the persona speaks again.

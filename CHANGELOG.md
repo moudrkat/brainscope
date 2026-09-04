@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2 (2026-09-04)
+
+- Emoji and other multi-byte characters no longer show up as `���` in the
+  answer text, the traces and the per-token instruments: byte-level tokens
+  are held back until the character is complete and the finished character
+  rides on the token that completed it. The API response was never affected
+  (it decodes the whole id sequence).
+
 ## 0.4.1 (2026-09-04)
 
 - The viz websocket now also carries the twelve largest components of the
