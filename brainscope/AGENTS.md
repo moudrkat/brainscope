@@ -14,6 +14,20 @@ Serves on `http://localhost:8010` by default (`--port`, `--host`). A
 directions file is JSON `{"name": [n_layers, hidden] matrix, ...}` or a
 hidden-directions direction dict.
 
+Flags worth knowing: `--lens auto|on|off` (logit lens; auto = on for CUDA,
+off for CPU — pass `on` for a CPU demo), `--tlens` / `--jlens` (fitted
+tuned / Jacobian lens artifacts), `--traces DIR` (persist every generation
+for replay), `--probes probes.json`, `--policy rules.json`, `--bake DIR`
+(a hidden-directions bake artifact), `--quantize 8bit|4bit`, `--device`,
+`--pace SECONDS` (slow decoding to an external clock), `--no-browser`.
+Presets for `--model`: `tiny`, `qwen3-4b`, `qwen3-8b`, `qwen3.5-9b`,
+`gemma-e4b`; anything else is a Hugging Face model id.
+
+Env knobs: `HIDDEN_MAX_STEPS` (hidden states kept per trace, 2048),
+`ATTN_MATRIX_MAX` (longest prompt that still gets the full attention
+matrix, 160 tokens), `ATTN_DIV_MAX_LAYERS` (cap on `attn_divergence`
+layers, 8).
+
 ## Talk to it (it's OpenAI-compatible)
 
 Point any OpenAI client at `http://localhost:8010/v1`. Standard
@@ -79,7 +93,15 @@ prefill is a much larger dose.
   Takes minutes (it generates live — watch the viz). Check `auc_holdout`
   before trusting the meter: ~0.5 means it learned noise.
 
-- `GET /info` — model + config.
+- `GET /info` — model + config. `GET /v1/models` lists the served model.
+- Read-only views of the **last generation** (what the browser draws):
+  `GET /gen` (tokens, per-layer lens grid, probe series), `/gen/attention?layer=`,
+  `/gen/heads?layer=`, `/gen/matrix?layer=` (full per-head prefill matrix,
+  short prompts only), `/gen/neurons?layer=&step=`, `/gen/sources`.
+  `POST /viz {"on": bool}` pauses the instruments for fast generation,
+  `POST /stop` aborts the running one; `/ws` streams per-token updates.
+- Traces (with `--traces`): `GET /traces`, `GET /traces/{id}`,
+  `POST /traces/{id}/replay`, `GET /traces/{id}/workspace?layer=&k=`.
 
 ## Gotchas
 

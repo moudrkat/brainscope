@@ -15,6 +15,8 @@ jobs:
           python-version: "3.12"
       - name: Install from a clean checkout
         run: pip install .[test]
+      - name: Packaged agent guide is in sync with the repo copy
+        run: diff AGENTS.md brainscope/AGENTS.md
       - name: Smoke test
         run: |
           python -c "from brainscope.server import STATIC; assert STATIC.exists(), 'static assets missing from package'"

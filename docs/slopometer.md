@@ -66,8 +66,6 @@ concrete-request + 8 false-positive probes):**
 **Qualitative token attribution (out-of-sample):** highlights land on
 "Let's be real:", headline bait, hashtags, "Hope this helps!"-style
 closers; concrete sentences inside the same answer stay unhighlighted.
-See fig_slop_pair (same topic, two requests: one answer glows, one
-doesn't).
 
 **Cross-lingual check:** the Czech-trained probe separates English
 answers at AUC 1.0 and vice versa, while cos(w_cz, w_en) ≈ 0.47 — the

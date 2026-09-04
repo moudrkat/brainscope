@@ -25,15 +25,14 @@ the model is doing (and steer it) without leaving their own OpenAI client.
 ## ⚡ Run in 30 s (laptop, no GPU)
 
 ```bash
-pip install -e . && brainscope --model tiny   # 0.5B model, CPU is fine
+pip install brainscope && brainscope --model tiny --lens on   # 0.5B model, CPU is fine
 ```
 
 Open the page it launches, type in the built-in chat box, and watch each word
 surface through the layers *before* the model writes it. No app to wire up,
 no card required. ([full quickstart ↓](#quickstart))
 
-An OpenAI-compatible chat server over any Hugging Face causal LM with a live
-view into the residual stream. What it does:
+What it does:
 
 - **Point your own app at it and watch real traffic** — no code changes:
   aim your OpenAI `base_url` at brainscope and every generation your app makes
@@ -108,7 +107,9 @@ brainscope --model tiny              # 0.5B, runs on CPU - good first try
 # → your eyes: http://<host>:8010      (opens automatically)
 ```
 
-No app handy? The viz page has a built-in chat box - type and watch.
+No app handy? The viz page has a built-in chat box - type and watch. Or run
+the whole instrument on a 135M-parameter model at microcontroller pace:
+[examples/esp32](examples/esp32/README.md).
 
 Or skip Python entirely and run the Docker image:
 
@@ -173,9 +174,11 @@ the instruments:
   *now* rather than just always loud. Hover a bar for channel, value and z;
   "follow live" tracks the newest token while generating.
 - **attention** - for the clicked layer: what each answer token looks back
-  at; **heads** splits the newest token per attention head.
+  at; **heads** splits the newest token per attention head; **matrix** is
+  the full per-head attention matrix of a short prompt's prefill.
 - **logit lens** (click lm_head) - every layer's next-token readout: watch
-  the answer crystallize with depth. Hover a cell for the top-5 candidates,
+  the answer crystallize with depth. On by default on CUDA; on CPU pass
+  `--lens on` (it costs one lm_head matmul per layer per token). Hover a cell for the top-5 candidates,
   click to pin the tooltip. With `--tlens` it reads through a **tuned lens**
   (Belrose et al. 2023, trained per-layer corrections), which removes the
   raw lens's mid-stack noise — same grid, honest depths.
@@ -260,7 +263,7 @@ up). Verify any of it against the trace with
 ## Reasoning traces
 
 ```bash
-brainscope --model mid --traces ./traces
+brainscope --model qwen3-4b --traces ./traces
 ```
 
 With `--traces DIR` every generation is persisted and replayable token by
@@ -310,7 +313,7 @@ bank's model validation at toy scale:
 ```bash
 # dirs.json comes from hidden-directions (pip install hidden-directions),
 # or from /capture if you are steering one agent by another
-brainscope --model mid --directions dirs.json
+brainscope --model qwen3-4b --directions dirs.json
 ```
 
 Extract a direction from contrast pairs and drive it live - activation
@@ -372,7 +375,7 @@ decoding costs nothing extra.
 
 ![the hierarchy tab on Qwen3-4B: two lines across all 36 layers showing how much of the last prompt position's attention lands on the current system prompt versus on the pre-update messages, with the old messages taking 10.1 times more of it](docs/hierarchy.jpg)
 
-Rebuild it with `python docs/make_hierarchy_fig.py` against a running brainscope — the numbers come from the `/hierarchy` report, not from a saved copy.
+Rebuild it with `python docs/make_hierarchy_fig.py` against a running brainscope (`BRAINSCOPE_BASE` picks the server, default `http://localhost:8010`) — the numbers come from the `/hierarchy` report, not from a saved copy.
 
 The tab is the diagnosis, not the effect: orange heads are the ones handing
 authority to old messages. Outlined groups are the ones that got rescaled — the
@@ -403,9 +406,8 @@ numbers behind the defaults.
 ## Auditing baked personas
 
 ```bash
-# persona.json names the two personas to compare; the server does the
-# extraction itself, a blank pairs.jsonl is enough to start
-brainscope --model mid --bake persona.json
+# a hidden-directions bake artifact folder (advocate_bias.pt inside)
+brainscope --model Qwen/Qwen2.5-7B-Instruct --bake hidden-directions/artifacts/example_flat_earth_7b
 ```
 
 A 9 KB weights patch - one MLP bias - can turn a model into a covert advocate
@@ -423,7 +425,8 @@ catalogue from
 ## Will it work with my app?
 
 Works when your app talks the **OpenAI chat-completions API** with
-**non-streaming** responses (`stream: true` not supported yet); tool calls
+**non-streaming** responses (`stream: true` is ignored, not rejected — the
+reply comes back as one non-streaming JSON body); tool calls
 are parsed in hermes/qwen, gemma-fenced and plain-JSON formats, and
 `tool_choice: "required"` (or a named function) is enforced by seeding the
 generation with the opening of a tool call in the model's own format.

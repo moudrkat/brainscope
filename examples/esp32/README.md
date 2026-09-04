@@ -16,8 +16,9 @@ learning what the logit lens, attention maps and steering actually show.
 ## Run it (no hardware needed)
 
 ```bash
-pip install brainscope
-python examples/esp32/serve.py
+git clone https://github.com/moudrkat/brainscope && cd brainscope
+pip install -e .
+python examples/esp32/serve.py      # needs the checkout: it imports its siblings
 ```
 
 Weights download from the Hub on first run (~120 MB fp32).
