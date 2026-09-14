@@ -31,6 +31,32 @@ from pathlib import Path
 import os
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+
+def _native_jit_guard() -> str | None:
+    """torch >= 2.14 routes some ops (rotary embeddings among them) through
+    Triton kernels that compile a small C shim on first use, which needs
+    Python.h and a C compiler. Without them the first request on CUDA dies
+    with a 160-line traceback. torch reads TORCH_DISABLE_NATIVE_JIT when it
+    registers those ops, i.e. at import — so decide here, before torch is
+    imported: no header or no compiler → plain aten kernels (same numbers;
+    brainscope is slow on purpose). Returns the reason, or None."""
+    if os.environ.get("TORCH_DISABLE_NATIVE_JIT"):
+        return None
+    import shutil
+    import sysconfig
+    header = os.path.join(sysconfig.get_path("include") or "", "Python.h")
+    if not os.path.exists(header):
+        reason = f"{header} is missing (install python3-dev for this interpreter)"
+    elif not (shutil.which("gcc") or shutil.which("cc") or shutil.which("clang")):
+        reason = "no C compiler on PATH"
+    else:
+        return None
+    os.environ["TORCH_DISABLE_NATIVE_JIT"] = "1"
+    return reason
+
+
+_NATIVE_JIT_OFF = _native_jit_guard()
+
 import numpy as np
 import torch
 import uvicorn
@@ -104,6 +130,9 @@ def load_model(name: str, device: str | None, quantize: str | None = None) -> No
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if dev == "cuda" and _NATIVE_JIT_OFF:
+        print("brainscope: torch native JIT (Triton) ops disabled for this process — "
+              f"{_NATIVE_JIT_OFF}. Same results, slightly slower.", flush=True)
     # eager attention so output_attentions really returns weights (sdpa/flash
     # never materialize them) — brainscope trades speed for sight everywhere
     kwargs = {"dtype": torch.bfloat16 if dev == "cuda" else torch.float32,

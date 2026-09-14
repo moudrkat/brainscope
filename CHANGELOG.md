@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.3 (2026-09-14)
+
+- On CUDA with torch >= 2.14, the first request no longer dies with
+  `fatal error: Python.h: No such file or directory` on a box without
+  python3-dev. torch's new Triton-backed native ops compile a C shim on
+  first use, and torch reads its `TORCH_DISABLE_NATIVE_JIT` switch at
+  import; brainscope now checks for `Python.h` and a C compiler before
+  importing torch and, if either is missing, sets the switch (plain aten
+  kernels, same numbers) and says so at model load. Docker images were
+  never affected.
+
 ## 0.4.2 (2026-09-04)
 
 - Emoji and other multi-byte characters no longer show up as `���` in the
