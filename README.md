@@ -33,6 +33,14 @@ surface through the layers *before* the model writes it (a raw logit lens,
 so the middle of the stack is approximate). No app to wire up, no card
 required. ([full quickstart ↓](#quickstart))
 
+> **On a CUDA box with the newest torch (≥ 2.14):** the first request can die
+> with `fatal error: Python.h: No such file or directory`. That is torch's new
+> Triton-backed "native ops" compiling a small C shim, not brainscope. Either
+> `sudo apt install python3-dev` (Debian/Ubuntu; the package matching your
+> interpreter, e.g. `python3.12-dev`), or run with
+> `TORCH_DISABLE_NATIVE_JIT=1 brainscope ...` — same numbers, plain aten
+> kernels. The Docker images below are unaffected.
+
 What it does:
 
 - **Point your own app at it and watch real traffic** — no code changes:
