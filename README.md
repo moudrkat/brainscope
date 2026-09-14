@@ -41,6 +41,13 @@ required. ([full quickstart ↓](#quickstart))
 > interpreter, e.g. `python3.12-dev`) re-enables them. Docker images below are
 > unaffected.
 
+**Something broke?** [Open an issue](https://github.com/moudrkat/brainscope/issues)
+with the command you ran, the last lines of the terminal, and
+`python -c "import torch, transformers, brainscope; print(torch.__version__, transformers.__version__)"`.
+Fresh-install breakage from a new torch/transformers release is exactly what
+I want to hear about — a weekly CI job runs the README path from PyPI, but it
+only covers CPU.
+
 What it does:
 
 - **Point your own app at it and watch real traffic** — no code changes:
