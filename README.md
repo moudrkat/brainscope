@@ -39,7 +39,7 @@ required. ([full quickstart ↓](#quickstart))
 > the process (`TORCH_DISABLE_NATIVE_JIT=1`, plain aten kernels, same
 > numbers) and says so. `sudo apt install python3-dev` (the one matching your
 > interpreter, e.g. `python3.12-dev`) re-enables them. Docker images below are
-> unaffected.
+> unaffected. Reported upstream: [pytorch/pytorch#196977](https://github.com/pytorch/pytorch/issues/196977).
 
 **Something broke?** [Open an issue](https://github.com/moudrkat/brainscope/issues)
 with the command you ran, the last lines of the terminal, and
