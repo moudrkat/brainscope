@@ -1,0 +1,43 @@
+name: fresh install from PyPI
+
+# The README's first command, run by a machine every week: install the
+# *published* package into an empty environment, start it on the tiny
+# model, send one chat request. Catches a new torch/transformers release
+# breaking the pip path (torch 2.14 did, 2026-09) before a reader does.
+# CPU only — the CUDA-specific guard is unit-tested, not exercised here.
+
+on:
+  schedule:
+    - cron: "37 6 * * 1"   # Mondays 06:37 UTC
+  workflow_dispatch:
+
+jobs:
+  pip-path:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: pip install brainscope (exactly as the README says)
+        run: |
+          pip install brainscope
+          pip show brainscope | head -2
+          python -c "import torch, transformers; print('torch', torch.__version__, 'transformers', transformers.__version__)"
+      - name: Start on the tiny model, one chat request
+        run: |
+          brainscope --model tiny --lens on --port 8010 --no-browser > server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8010/v1/models >/dev/null && break; sleep 5; done
+          curl -sf http://127.0.0.1:8010/v1/models
+          curl -sf -m 300 http://127.0.0.1:8010/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model":"tiny","messages":[{"role":"user","content":"Say hello in five words."}],"max_tokens":20}' \
+            | tee answer.json
+          python - <<'PY'
+          import json
+          c = json.load(open("answer.json"))["choices"][0]["message"]["content"]
+          assert c.strip(), "empty answer"
+          print("answer:", c)
+          PY
+      - name: Server log
+        if: always()
+        run: tail -40 server.log || true
