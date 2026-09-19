@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `stream: true` on `/v1/chat/completions`: the same generation as
+  server-sent events, one chunk per token, OpenAI-shaped. With
+  `logprobs: true` each chunk carries the sampled token's log-probability
+  and its top five rivals at temperature 1, so a client can draw the
+  model's certainty and its roads not taken from the API alone. The viz
+  keeps receiving every payload as before.
+- `--cors`: answer cross-origin requests, for a web app served from
+  elsewhere that points its OpenAI client at this server (the first one is
+  brave-new-world, which lets a page dream its worlds through brainscope
+  and watch the residual stream over here). Off by default; the API has no
+  auth.
+
 ## 0.4.3 (2026-09-14)
 
 - On CUDA with torch >= 2.14, the first request no longer dies with

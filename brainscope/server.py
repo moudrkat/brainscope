@@ -61,7 +61,7 @@ import numpy as np
 import torch
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from . import vsteer as _vsteer
 from .jlens import JacobianLens
@@ -895,6 +895,13 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         _tool_scan(scan, piece)
         state["steer_mute"] = not scan["speak"]
         payload = {"type": "token", "i": step, "text": piece, "norms": [], "cos": {}}
+        # the sampled token's log-probability and its five nearest rivals, at
+        # temperature 1 (the raw distribution); an OpenAI client asking for
+        # logprobs gets these per streamed token
+        _lp = torch.log_softmax(logits.float(), dim=-1)
+        _top = torch.topk(_lp, 5)
+        payload["lp"] = {"logprob": float(_lp[int(next_id)]),
+                         "top": [[tok.decode([int(i)]), float(v)] for v, i in zip(_top.values, _top.indices)]}
         gen["all_tokens"].append(piece)
         # cheap probes: scores were written by the vprobe hooks during THIS
         # step's forward — step 0 comes straight out of prefill, uncaptured,
@@ -987,6 +994,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             inject_after_think = ""                # once only
 
     text = ("" if after_think else forced_prefix) + tok.decode(generated, skip_special_tokens=False)
+    state["last_generated"] = generated
     gen["done"] = True
     state["steer_mute"] = False
     trace_id = None
@@ -1075,11 +1083,74 @@ async def chat_completions(body: dict):
                     {"error": f"unknown direction {name!r}",
                      "directions": sorted(state["directions"])}, status_code=400)
 
+    if body.get("stream"):
+        return _stream_chat(body, loop, steering, tags)
+
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
         notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"))
     return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
+
+
+def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
+    """`stream: true`: the same generation, handed out as OpenAI-style
+    server-sent events, one chunk per token. With `logprobs: true` each chunk
+    carries the token's log-probability and its top five rivals, so a client
+    that draws the model's certainty (or its roads not taken) can do so from
+    here as well as from the viz. The viz keeps getting every payload too."""
+    queue: asyncio.Queue = asyncio.Queue()
+    want_lp = bool(body.get("logprobs"))
+    n_top = max(0, min(5, int(body.get("top_logprobs") or 5)))
+
+    def notify(payload):
+        asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+        if payload.get("type") in ("token", "done"):
+            loop.call_soon_threadsafe(queue.put_nowait, payload)
+
+    task = asyncio.ensure_future(asyncio.to_thread(
+        generate_with_signals, body["messages"], body.get("tools"),
+        int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
+        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy")))
+    cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    model = state["model_name"]
+
+    def chunk(delta: dict, finish=None, lp=None) -> str:
+        choice = {"index": 0, "delta": delta, "finish_reason": finish}
+        if lp is not None:
+            choice["logprobs"] = {"content": [lp]}
+        return "data: " + json.dumps({"id": cid, "object": "chat.completion.chunk", "created": created,
+                                      "model": model, "choices": [choice]}, ensure_ascii=False) + "\n\n"
+
+    async def events():
+        yield chunk({"role": "assistant", "content": ""})
+        held = None   # the logprob of a byte-level token still waiting for its character
+        try:
+            while True:
+                payload = await queue.get()
+                if payload["type"] == "done":
+                    break
+                lp = None
+                if want_lp and payload.get("lp"):
+                    lp = {"token": payload["text"], "logprob": payload["lp"]["logprob"],
+                          "top_logprobs": [{"token": t, "logprob": v} for t, v in payload["lp"]["top"][:n_top]]}
+                if not payload["text"]:
+                    held = lp or held
+                    continue
+                if lp is not None and held is not None:
+                    lp["token"] = payload["text"]
+                held = None
+                yield chunk({"content": payload["text"]}, lp=lp)
+            text = await task
+            finish = "length" if len(state.get("last_generated", [])) >= int(body.get("max_tokens") or 1024) else "stop"
+            yield chunk({}, finish=finish)
+        except Exception as e:   # the client sees why, instead of a silent close
+            yield "data: " + json.dumps({"error": str(e)}) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
 
 
 def _cos_summary(hidden_steps: list, direction) -> list:
@@ -2408,6 +2479,10 @@ def main() -> None:
                              "lockstep with an edge device executing the same "
                              "weights, or just to watch a thought in slow motion")
     parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument("--cors", action="store_true",
+                        help="answer cross-origin requests, so a web app served from elsewhere "
+                             "can point its OpenAI client at this server (the API has no auth: "
+                             "keep --host 127.0.0.1 unless you mean it)")
     args = parser.parse_args()
     state["pace"] = max(0.0, args.pace)
     if args.guide:
@@ -2499,6 +2574,10 @@ def main() -> None:
         import webbrowser
         threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{args.port}/")).start()
     print(f"brainscope: app endpoint http://0.0.0.0:{args.port}/v1 · viz http://localhost:{args.port}/")
+    if args.cors:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+        print("brainscope: cross-origin requests allowed (--cors)", flush=True)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
