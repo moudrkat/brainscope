@@ -129,3 +129,23 @@ def test_emergence_tracks_overridden_token(client):
     em = client.get(f"/traces/{trace_id}/emergence",
                     params={"token": piece.strip()}).json()
     assert piece.strip() in em["token"]
+
+
+def test_continue_picks_up_the_partial_assistant_turn(client):
+    # {"continue": true} with a trailing assistant message: the prompt ends
+    # on the partial text itself — no <|im_end|>, no fresh assistant header —
+    # so the generation is a continuation, which is what a token-at-a-time
+    # client loop needs (read the lens, re-steer, continue)
+    body = {"messages": [{"role": "user", "content": "Tell me a story."},
+                         {"role": "assistant", "content": "Once upon a"}],
+            "max_tokens": 4, "continue": True}
+    r = client.post("/v1/chat/completions", json=body)
+    assert r.status_code == 200, r.text
+    tail = "".join(bs.state["gen"]["prompt_tokens"][-6:])
+    assert tail.endswith("Once upon a"), tail
+    assert len(bs.state["gen"]["all_tokens"]) > 0
+    # without the flag the same messages close the turn and open a new one
+    body.pop("continue")
+    client.post("/v1/chat/completions", json=body)
+    tail = "".join(bs.state["gen"]["prompt_tokens"][-12:])
+    assert "<|im_end|>" in tail and tail.rstrip().endswith("assistant"), tail

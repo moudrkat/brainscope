@@ -646,8 +646,14 @@ _GEN_LOCK = threading.Lock()  # one generation at a time — retries/parallel ag
 @torch.inference_mode()
 def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                           steering: dict | None = None, tags: dict | None = None,
-                          tool_choice=None, hierarchy: dict | None = None):
+                          tool_choice=None, hierarchy: dict | None = None,
+                          continue_final: bool = False):
     """Token-by-token generation, calling notify(payload) per token.
+
+    `continue_final` ({"continue": true} in the request): the last message is
+    a partial assistant turn and generation picks up mid-sentence — no new
+    assistant header is added. This is what lets a client drive a
+    generation a few tokens at a time (read the lens, re-steer, continue).
 
     `steering` scopes activation addition to THIS request only: it overrides
     the global slider for the duration of the generation (including an
@@ -671,7 +677,8 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
                 active_steer = None
         try:
             return _generate(messages, tools, max_new_tokens, temperature, notify,
-                             active_steer, tags, tool_choice, hierarchy)
+                             active_steer, tags, tool_choice, hierarchy,
+                             continue_final=continue_final)
         finally:
             for h in request_handles:
                 h.remove()
@@ -745,10 +752,15 @@ def _tool_scan(st: dict, text: str) -> None:
 
 
 def _generate(messages, tools, max_new_tokens, temperature, notify,
-              active_steer=None, tags=None, tool_choice=None, hierarchy=None):
+              active_steer=None, tags=None, tool_choice=None, hierarchy=None,
+              continue_final=False):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
-    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
+    if continue_final and messages and messages[-1].get("role") == "assistant":
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False,
+                                         continue_final_message=True, **kwargs)
+    else:
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
     replay_ctx = {"messages": messages, "tools": tools, "tool_choice": tool_choice}
 
     # tool_choice enforcement without guided decoding: seed the generation with
@@ -1089,7 +1101,8 @@ async def chat_completions(body: dict):
     text = await asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
-        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"))
+        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"),
+        bool(body.get("continue")))
     return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
 
 
@@ -1111,7 +1124,8 @@ def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
     task = asyncio.ensure_future(asyncio.to_thread(
         generate_with_signals, body["messages"], body.get("tools"),
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
-        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy")))
+        notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"),
+        bool(body.get("continue"))))
     cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
     model = state["model_name"]
