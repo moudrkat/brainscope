@@ -149,3 +149,25 @@ def test_continue_picks_up_the_partial_assistant_turn(client):
     client.post("/v1/chat/completions", json=body)
     tail = "".join(bs.state["gen"]["prompt_tokens"][-12:])
     assert "<|im_end|>" in tail and tail.rstrip().endswith("assistant"), tail
+
+
+def test_bare_json_is_syntax_muted_except_string_values():
+    # a world spec answered as bare JSON: keys and brackets muted, string
+    # values (where the enums live) may be steered; after the object closes
+    # everything speaks again
+    st = bs._tool_scan_new()
+    speak = []
+    for c in '{"time": "dusk", "n": 3, "e": [{"k": "moon"}]} and':
+        bs._tool_scan(st, c)
+        speak.append(st["speak"])
+    text = '{"time": "dusk", "n": 3, "e": [{"k": "moon"}]} and'
+    at = lambda sub: text.index(sub) + 1          # after the first char of sub
+    assert not speak[at('"time')]                 # a key
+    assert speak[at('dusk')]                      # a string value
+    assert not speak[text.index("3")]             # a number
+    assert speak[at("moon")]                      # nested string value
+    assert speak[text.index(" and") + 2]          # prose after the object
+    # a plain prose answer is never muted
+    st = bs._tool_scan_new()
+    bs._tool_scan(st, "The rain does not ask.")
+    assert st["speak"]

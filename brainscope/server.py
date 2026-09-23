@@ -695,7 +695,8 @@ def generate_with_signals(messages, tools, max_new_tokens, temperature, notify,
 
 def _tool_scan_new() -> dict:
     return {"buf": "", "in_call": False, "stack": [], "in_str": False, "esc": False,
-            "expect": "key", "key": "", "args_depth": None, "speak": True}
+            "expect": "key", "key": "", "args_depth": None, "speak": True,
+            "seen": False, "bare": False}
 
 
 def _tool_scan(st: dict, text: str) -> None:
@@ -705,14 +706,25 @@ def _tool_scan(st: dict, text: str) -> None:
     steered; inside one only the STRING VALUES under "arguments" may be
     steered — the persona talks through the call's content while the JSON
     scaffolding, the keys and the function name stay well-formed.
+
+    A BARE JSON answer (the generation's first non-blank character is `{`,
+    no tool-call tag) gets the same treatment from that character on: keys,
+    brackets and numbers are muted, every string value may be steered. That
+    is where a steered world-spec keeps its shape — steering breaks JSON long
+    before it sways a choice, unless it is kept out of the scaffolding.
     st["speak"] is True whenever steering may apply."""
     for c in text:
         st["buf"] = (st["buf"] + c)[-16:]
+        if not st["seen"] and not c.isspace():
+            st["seen"] = True
+            if c == "{":
+                st.update(in_call=True, bare=True, stack=[], in_str=False,
+                          esc=False, expect="key", key="", args_depth=0)
         if not st["in_call"]:
             if st["buf"].endswith("<tool_call>"):
                 st.update(in_call=True, stack=[], in_str=False, esc=False,
                           expect="key", key="", args_depth=None)
-        elif st["buf"].endswith("</tool_call>"):
+        elif not st["bare"] and st["buf"].endswith("</tool_call>"):
             st["in_call"] = False
         elif st["in_str"]:
             if st["esc"]:
@@ -742,6 +754,8 @@ def _tool_scan(st: dict, text: str) -> None:
                 if st["args_depth"] is not None and len(st["stack"]) < st["args_depth"]:
                     st["args_depth"] = None
                 st["expect"] = "key"
+                if st["bare"] and not st["stack"]:
+                    st["in_call"] = False        # the object closed: prose again
             elif c == ",":
                 st["expect"] = "key" if (st["stack"] and st["stack"][-1] == "{") else "value"
         if st["in_call"] and st["in_str"] and st["expect"] == "key":
