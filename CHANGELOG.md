@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 (2026-11-12)
 
 - Probes read the prompt: every token of the user's last message is scored
   while the model reads it, and the verdict (per-token scores, the smoothed
