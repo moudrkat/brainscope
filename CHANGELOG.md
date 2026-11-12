@@ -11,6 +11,11 @@
   and in traces (`probe_prompt`). The template around the message and the
   start-of-turn token (an attention sink, about −36 on a probe that reads ~0
   elsewhere) are not read.
+- A probe trained elsewhere loads as it is: `POST /probes` takes `vector`,
+  `bias` and `hidden_state` (the transformers index it was fitted on; read at
+  decoder layer `hidden_state - 1`), and the new `logit` metric scores
+  `h·v + bias`, the probe's own per-token logit. Responses leave the inline
+  vectors out; the probes file keeps them, so it reloads on its own.
 
 - `stream: true` on `/v1/chat/completions`: the same generation as
   server-sent events, one chunk per token, OpenAI-shaped. The streamed

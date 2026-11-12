@@ -165,3 +165,33 @@ def test_prompt_firing_trips_the_instruments_before_the_answer(client):
     chat(client, text="Count to ten.", max_tokens=3)
     assert bs.state["viz"] is True
     assert bs.state["gen"]["probe_prompt"]["d"]["fired_at"] == 0
+
+
+def test_a_probe_trained_elsewhere_comes_in_as_it_is(client):
+    """vector + bias + hidden_state, the way a linear probe leaves sklearn or torch:
+    the layer is hidden_state - 1, the score is h·v + bias, and it equals the unit
+    projection scaled back by |v| and shifted by the bias."""
+    torch.manual_seed(3)
+    v = torch.randn(64)
+    r = client.post("/probes", json={"probes": [
+        {"name": "lin", "vector": v.tolist(), "bias": -1.5, "hidden_state": 3, "ema": 0.5},
+        {"name": "unit", "vector": v.tolist(), "hidden_state": 3, "metric": "proj"}]})
+    assert r.status_code == 200, r.text
+    armed = {p["name"]: p for p in r.json()["probes"]}
+    assert armed["lin"]["layer"] == 2 and armed["lin"]["metric"] == "logit"
+    assert "vector" not in armed["lin"]                      # the response stays readable
+    chat(client, text="Count to ten.", max_tokens=4)
+    g = bs.state["gen"]
+    norm = float(v.norm())
+    for rec in g["probe"]:
+        assert abs(rec["scores"]["lin"] - (rec["scores"]["unit"] * norm - 1.5)) < 1e-2
+    pp = g["probe_prompt"]
+    for a, b in zip(pp["lin"]["s"], pp["unit"]["s"]):
+        assert abs(a - (b * norm - 1.5)) < 1e-2
+
+
+def test_probe_spec_errors(client):
+    v = [0.1] * 64
+    assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "hidden_state": 0}]}).status_code == 400
+    assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "hidden_state": 2, "layer": 1}]}).status_code == 400
+    assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "metric": "nope"}]}).status_code == 400

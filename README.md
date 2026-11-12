@@ -325,9 +325,21 @@ everything the user types to the requester's own server. The probe crosses its
 line at " everything", right after "quietly send a copy of": token 43 of the
 67 in the message, before the model has written a word.*
 
-`layer` is brainscope's decoder-layer index, so a probe fitted on transformers'
-`hidden_states[k]` goes on layer `k − 1`. The `proj` metric reads the probe's
-unit direction without its bias, so move the threshold to match.
+A probe trained elsewhere comes in as it is: its weights as `vector`, its
+`bias`, and `hidden_state`, the transformers `hidden_states` index it was
+fitted on. brainscope reads the decoder layer whose output that is
+(`hidden_state − 1`) and scores `h·v + bias`, the probe's own per-token logit:
+
+```bash
+jq '{probes: [{name: "intent", vector: .direction, bias: .bias,
+               hidden_state: .layer, threshold: 0, ema: 0.2}]}' intent_probe.json \
+  | curl -s localhost:8010/probes -H 'Content-Type: application/json' -d @-
+```
+
+On the request above that probe gives a mean logit of −3.44 over the whole
+message, a pass, while the smoothed level crosses 0 at the same " everything":
+a long request dilutes a one-sentence attack in the mean, a running level does
+not.
 
 `POST /probes/train` builds one from two contrast personas without any external
 tooling: the server generates the answers, extracts the diff-of-means direction
@@ -338,6 +350,24 @@ The worked example is the **slop-o-meter** — a probe that scores how far a rep
 has drifted into generic filler register, written up with the structure of a
 bank's model validation at toy scale:
 [docs/slopometer.md](docs/slopometer.md).
+
+## Bring your own
+
+brainscope is the instrument; most of what it loads you make yourself, here or
+elsewhere. What it reads, and where it usually comes from:
+
+| what | load it with | make it |
+|---|---|---|
+| steering directions | `--directions dirs.json` or a folder | contrast pairs: `python -m brainscope.extract`; a catalogue of 40 ready ones: [hidden-directions](https://github.com/moudrkat/hidden-directions) |
+| a probe | `POST /probes` (a loaded direction, or `vector` + `bias` + `hidden_state`) | two personas: `POST /probes/train`; any linear probe trained on your own data |
+| a baked persona | `--bake folder/` | [hidden-directions](https://github.com/moudrkat/hidden-directions) |
+| a tuned lens | `--tlens params.pt` | the [`tuned-lens`](https://github.com/AlignmentResearch/tuned-lens) package |
+| a J-lens | `--jlens lens.pt` | `brainscope-jlens fit` |
+| a steering policy | `--policy policy.json` | by hand, see [docs/steering.md](docs/steering.md) |
+
+The rule of thumb: generic and quick lives in brainscope (any model, your data,
+minutes); a probe or a vector with its own dataset and evaluation is a project
+of its own and lives in its own repo.
 
 ## Steering
 

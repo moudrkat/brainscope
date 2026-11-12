@@ -547,30 +547,59 @@ def _match_policy(tags: dict) -> dict | None:
     return None
 
 
+def _probe_score(h: torch.Tensor, spec: dict) -> torch.Tensor:
+    """A probe's reading of residual(s) h ([hidden] or [positions, hidden]):
+    'proj' = h·v̂ (hidden-state units), 'cos' = cosine, 'logit' = h·v + bias with
+    the vector as given — the per-token logit of a linear probe trained elsewhere."""
+    row = _dir_row(spec["direction"], spec["layer"]).float()
+    if spec["metric"] == "cos":
+        return torch.nn.functional.cosine_similarity(h, row.expand_as(h), dim=-1)
+    if spec["metric"] == "logit":
+        return h @ row + spec.get("bias", 0.0)
+    return h @ (row / (row.norm() + 1e-8))
+
+
 def _normalize_vprobes(raw) -> list | str:
     """Validate a POST /probes spec list into canonical specs (or an error
     string). A spec names a loaded direction, the decoder layer to read at
     (default: the direction's suggested layer, else mid-stack), a metric
-    ('proj' = h·v̂ in hidden-state units, 'cos' = cosine), an optional firing
-    threshold (signed, fires on score >= threshold) and an optional trip
-    ('viz': flip the full capture on when the probe fires)."""
+    ('proj' = h·v̂ in hidden-state units, 'cos' = cosine, 'logit' = h·v + bias),
+    an optional firing threshold (signed, fires on score >= threshold) and an
+    optional trip ('viz': flip the full capture on when the probe fires).
+
+    A probe trained elsewhere comes in as it is: "vector" (inline, registered
+    as a direction under the probe's name), "bias", and "hidden_state": k, the
+    transformers hidden_states index it was fitted on — brainscope's layer is
+    the decoder layer whose output that is, k - 1."""
     if not isinstance(raw, list):
         return "expected {probes: [...]}"
     n_layers = len(_decoder_layers(state["model"]))
     specs = []
     for p in raw:
         d = p.get("direction") or p.get("name")
+        if p.get("vector") is not None:
+            d = p.get("name") or d or "probe"
+            try:
+                state["directions"][d] = torch.tensor(p["vector"], dtype=torch.float32).to(state["device"])
+            except (TypeError, ValueError):
+                return f"probe {d!r}: vector must be a list of numbers"
         if d not in state["directions"]:
             return f"unknown direction {d!r}"
         layer = p.get("layer")
+        if p.get("hidden_state") is not None:
+            if layer is not None:
+                return "give layer or hidden_state, not both"
+            layer = int(p["hidden_state"]) - 1
+            if layer < 0:
+                return "hidden_state 0 is the embedding output, not a layer"
         if layer is None:
             layer = state["dir_meta"].get(d, {}).get("layer_from", n_layers // 2)
         layer = int(layer)
         if not 0 <= layer < n_layers:
             return f"layer out of range 0..{n_layers - 1}"
-        metric = p.get("metric", "proj")
-        if metric not in ("proj", "cos"):
-            return "metric must be 'proj' or 'cos'"
+        metric = p.get("metric", "logit" if p.get("bias") is not None else "proj")
+        if metric not in ("proj", "cos", "logit"):
+            return "metric must be 'proj', 'cos' or 'logit'"
         trip = p.get("trip")
         if trip not in (None, "viz"):
             return "trip must be 'viz'"
@@ -581,13 +610,21 @@ def _normalize_vprobes(raw) -> list | str:
         scale = p.get("scale")   # calibrated register level (pos-class mean
         # projection) — lets the UI show comparable % instead of raw h·v̂,
         # whose units differ per direction
-        specs.append({"name": p.get("name") or d, "direction": d, "layer": layer,
-                      "metric": metric,
+        spec = {"name": p.get("name") or d, "direction": d, "layer": layer,
+                      "metric": metric, "bias": float(p.get("bias") or 0.0),
                       "threshold": None if thr is None else float(thr),
                       "ema": None if ema is None else float(ema),
                       "scale": None if scale is None else float(scale),
-                      "trip": trip})
+                      "trip": trip}
+        if p.get("vector") is not None:   # kept so the probes file reloads on its own
+            spec["vector"] = p["vector"]
+        specs.append(spec)
     return specs
+
+
+def _public_probes() -> list:
+    """The armed probes without their inline vectors (hundreds of numbers each)."""
+    return [{k: v for k, v in s.items() if k != "vector"} for s in state["vprobes"]]
 
 
 def _install_vprobe_hooks() -> None:
@@ -626,22 +663,13 @@ def _install_vprobe_hooks() -> None:
                 # answer series and the traces keep their decode-only meaning.
                 hp = t[0].float()
                 for spec in specs:
-                    row = _dir_row(spec["direction"], spec["layer"]).float()
-                    if spec["metric"] == "cos":
-                        s = torch.nn.functional.cosine_similarity(hp, row[None], dim=1)
-                    else:
-                        s = hp @ (row / (row.norm() + 1e-8))
+                    s = _probe_score(hp, spec)
                     state.setdefault("vprobe_prompt", {}).setdefault(spec["name"], []).extend(
                         float(x) for x in s.tolist())
                 return
             h = t[0, -1].float()
             for spec in specs:
-                row = _dir_row(spec["direction"], spec["layer"]).float()
-                if spec["metric"] == "cos":
-                    s = torch.nn.functional.cosine_similarity(h, row, dim=0)
-                else:
-                    s = h @ (row / (row.norm() + 1e-8))
-                state["vprobe_scores"][spec["name"]] = float(s)
+                state["vprobe_scores"][spec["name"]] = float(_probe_score(h, spec))
         return hook
 
     for layer, specs in by_layer.items():
@@ -2237,7 +2265,7 @@ async def delete_direction(name: str):
 
 @app.get("/probes")
 async def get_probes():
-    return {"probes": state["vprobes"], "enabled": state["vprobes_on"],
+    return {"probes": _public_probes(), "enabled": state["vprobes_on"],
             "last": {k: round(v, 4) for k, v in state["vprobe_scores"].items()}}
 
 
@@ -2264,7 +2292,7 @@ async def set_probes(body: dict):
         state["vprobes"] = specs
         _install_vprobe_hooks()
     _persist_vprobes()
-    return {"probes": state["vprobes"], "enabled": state["vprobes_on"]}
+    return {"probes": _public_probes(), "enabled": state["vprobes_on"]}
 
 
 def _persist_policy() -> None:
