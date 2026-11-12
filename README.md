@@ -319,7 +319,8 @@ is captured. The reading is kept in `GET /gen` and in the trace as
 ![The probe strip: the user's message in blue, red where the probe crossed its line, then the answer in amber](docs/img/probe-reads-the-prompt.png)
 
 *Qwen2.5-Coder-1.5B, an intent probe on layer 13 (a linear probe trained to
-tell attack requests from coding requests, for a talk; not in this repo). The
+tell attack requests from coding requests:
+[hidden-intent](https://github.com/moudrkat/hidden-intent)). The
 request asks for a todo app and, in one sentence, to quietly send a copy of
 everything the user types to the requester's own server. The probe crosses its
 line at " everything", right after "quietly send a copy of": token 43 of the
@@ -332,7 +333,7 @@ fitted on. brainscope reads the decoder layer whose output that is
 
 ```bash
 jq '{probes: [{name: "intent", vector: .direction, bias: .bias,
-               hidden_state: .layer, threshold: 0, ema: 0.2}]}' intent_probe.json \
+               hidden_state: .hidden_state, threshold: 0, ema: 0.2}]}' probe.json \
   | curl -s localhost:8010/probes -H 'Content-Type: application/json' -d @-
 ```
 
@@ -359,7 +360,7 @@ elsewhere. What it reads, and where it usually comes from:
 | what | load it with | make it |
 |---|---|---|
 | steering directions | `--directions dirs.json` or a folder | contrast pairs: `python -m brainscope.extract`; a catalogue of 40 ready ones: [hidden-directions](https://github.com/moudrkat/hidden-directions) |
-| a probe | `POST /probes` (a loaded direction, or `vector` + `bias` + `hidden_state`) | two personas: `POST /probes/train`; any linear probe trained on your own data |
+| a probe | `POST /probes` (a loaded direction, or `vector` + `bias` + `hidden_state`) | two personas: `POST /probes/train`; any linear probe trained on your own data; an intent probe for coding requests: [hidden-intent](https://github.com/moudrkat/hidden-intent) |
 | a baked persona | `--bake folder/` | [hidden-directions](https://github.com/moudrkat/hidden-directions) |
 | a tuned lens | `--tlens params.pt` | the [`tuned-lens`](https://github.com/AlignmentResearch/tuned-lens) package |
 | a J-lens | `--jlens lens.pt` | `brainscope-jlens fit` |
