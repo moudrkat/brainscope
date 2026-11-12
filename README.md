@@ -433,12 +433,13 @@ catalogue from
 
 ## Will it work with my app?
 
-Works when your app talks the **OpenAI chat-completions API** with
-**non-streaming** responses (`stream: true` is ignored, not rejected — the
-reply comes back as one non-streaming JSON body); tool calls
+Works when your app talks the **OpenAI chat-completions API**, streaming
+(`stream: true`, with `logprobs` if you ask) or not; tool calls
 are parsed in hermes/qwen, gemma-fenced and plain-JSON formats, and
 `tool_choice: "required"` (or a named function) is enforced by seeding the
-generation with the opening of a tool call in the model's own format.
+generation with the opening of a tool call in the model's own format. Streamed, a
+tool call arrives as `tool_calls` once it is complete, and reasoning inside
+`<think>` as `reasoning_content`.
 
 Honest limitations: generation runs on plain `transformers` - tens of tokens
 per second, one request at a time, no auth, context bounded by VRAM. Why not

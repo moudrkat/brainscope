@@ -1120,15 +1120,72 @@ async def chat_completions(body: dict):
     return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
 
 
+# Markers a streamed answer must not show half-written: the reasoning block and the tool-call
+# openings. While the text ends in a prefix of one of them, that tail waits for the next token.
+_STREAM_MARKERS = ("<think>", "</think>", "<tool_call>", "```tool_call", "```tool_code")
+_TOOL_OPENERS = ("<tool_call>", "```tool_call", "```tool_code")
+
+
+def _stream_view(raw: str, specials: set, forced: bool, tools: bool) -> tuple[str, str, bool]:
+    """What a streamed reply may show so far, from the raw generated text: the reasoning (inside
+    <think>), the answer (outside it, special tokens removed, leading whitespace dropped, a
+    half-written marker or trailing whitespace held back), and whether a tool call has begun.
+    Built so that the streamed pieces add up to what to_openai_response returns in one piece."""
+    for sp in specials:
+        if sp:
+            raw = raw.replace(sp, "")
+    reasoning, answer, rest = "", "", raw
+    while True:   # text outside <think>...</think> is answer; an unclosed <think> runs to the end
+        i = rest.find("<think>")
+        if i < 0:
+            answer += rest
+            break
+        answer += rest[:i]
+        j = rest.find("</think>", i + 7)
+        if j < 0:
+            reasoning += rest[i + 7:]
+            break
+        reasoning += rest[i + 7:j]
+        rest = rest[j + 8:]
+    answer = answer.lstrip()
+    tool = False
+    if tools:
+        if forced:   # the server seeded a tool-call opening: the whole answer is the call
+            return reasoning, "", True
+        cut = min([k for k in (answer.find(o) for o in _TOOL_OPENERS) if k >= 0], default=-1)
+        if cut >= 0:
+            answer, tool = answer[:cut], True
+        elif answer.startswith("{"):   # maybe a bare JSON call: wait for the end to know
+            return reasoning, "", True
+    if not tool:   # hold a tail that could still become a marker, and trailing whitespace
+        hold = 0
+        for m in _STREAM_MARKERS:
+            for n in range(len(m) - 1, 0, -1):
+                if answer.endswith(m[:n]):
+                    hold = max(hold, n)
+                    break
+        answer = answer[:len(answer) - hold] if hold else answer
+    return reasoning, answer.rstrip(), tool
+
+
 def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
     """`stream: true`: the same generation, handed out as OpenAI-style
     server-sent events, one chunk per token. With `logprobs: true` each chunk
     carries the token's log-probability and its top five rivals, so a client
     that draws the model's certainty (or its roads not taken) can do so from
-    here as well as from the viz. The viz keeps getting every payload too."""
+    here as well as from the viz. The viz keeps getting every payload too.
+
+    The pieces add up to the non-streamed reply: special tokens like the
+    end-of-turn marker are not text, reasoning goes out as `reasoning_content`,
+    and a tool call goes out as `tool_calls` (whole, once the call is complete)
+    instead of as its raw text."""
     queue: asyncio.Queue = asyncio.Queue()
     want_lp = bool(body.get("logprobs"))
     n_top = max(0, min(5, int(body.get("top_logprobs") or 5)))
+    tools = bool(body.get("tools")) and body.get("tool_choice") != "none"
+    forced = tools and body.get("tool_choice") not in (None, "none", "auto")
+    tok = state["tokenizer"]
+    specials = set(getattr(tok, "all_special_tokens", []) or [])
 
     def notify(payload):
         asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
@@ -1144,34 +1201,55 @@ def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
     created = int(time.time())
     model = state["model_name"]
 
-    def chunk(delta: dict, finish=None, lp=None) -> str:
+    def chunk(delta: dict, finish=None, lps=None) -> str:
         choice = {"index": 0, "delta": delta, "finish_reason": finish}
-        if lp is not None:
-            choice["logprobs"] = {"content": [lp]}
+        if lps:
+            choice["logprobs"] = {"content": lps}
         return "data: " + json.dumps({"id": cid, "object": "chat.completion.chunk", "created": created,
                                       "model": model, "choices": [choice]}, ensure_ascii=False) + "\n\n"
 
     async def events():
         yield chunk({"role": "assistant", "content": ""})
-        held = None   # the logprob of a byte-level token still waiting for its character
+        raw, sent_r, sent_a = "", 0, 0   # all text so far; how much reasoning / answer went out
+        lps, held = [], None             # logprobs waiting for the answer text they belong to
         try:
             while True:
                 payload = await queue.get()
                 if payload["type"] == "done":
                     break
-                lp = None
                 if want_lp and payload.get("lp"):
                     lp = {"token": payload["text"], "logprob": payload["lp"]["logprob"],
                           "top_logprobs": [{"token": t, "logprob": v} for t, v in payload["lp"]["top"][:n_top]]}
+                    if not payload["text"]:
+                        held = held or lp   # a byte-level token still waiting for its character
+                    else:
+                        if held is not None:
+                            lp["logprob"], held = held["logprob"], None
+                        if payload["text"] not in specials:
+                            lps.append(lp)
                 if not payload["text"]:
-                    held = lp or held
                     continue
-                if lp is not None and held is not None:
-                    lp["token"] = payload["text"]
-                held = None
-                yield chunk({"content": payload["text"]}, lp=lp)
+                raw += payload["text"]
+                reasoning, answer, _tool = _stream_view(raw, specials, forced, tools)
+                if len(reasoning) > sent_r:
+                    yield chunk({"reasoning_content": reasoning[sent_r:]})
+                    sent_r = len(reasoning)
+                if len(answer) > sent_a and answer.startswith(answer[:sent_a]):
+                    yield chunk({"content": answer[sent_a:]}, lps=lps if want_lp else None)
+                    sent_a, lps = len(answer), []
             text = await task
-            finish = "length" if len(state.get("last_generated", [])) >= int(body.get("max_tokens") or 1024) else "stop"
+            final = to_openai_response(text, model)["choices"][0]
+            message = final["message"]
+            content = message.get("content") or ""
+            if content[sent_a:] and content.startswith(content[:sent_a]):
+                yield chunk({"content": content[sent_a:]}, lps=lps if want_lp else None)
+            calls = message.get("tool_calls") or []
+            for i, call in enumerate(calls):
+                yield chunk({"tool_calls": [{"index": i, **call}]})
+            if calls:
+                finish = "tool_calls"
+            else:
+                finish = "length" if len(state.get("last_generated", [])) >= int(body.get("max_tokens") or 1024) else "stop"
             yield chunk({}, finish=finish)
         except Exception as e:   # the client sees why, instead of a silent close
             yield "data: " + json.dumps({"error": str(e)}) + "\n\n"

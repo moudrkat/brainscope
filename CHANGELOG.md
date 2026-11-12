@@ -3,7 +3,10 @@
 ## Unreleased
 
 - `stream: true` on `/v1/chat/completions`: the same generation as
-  server-sent events, one chunk per token, OpenAI-shaped. With
+  server-sent events, one chunk per token, OpenAI-shaped. The streamed
+  pieces add up to the non-streamed reply: the end-of-turn marker is not
+  text, a tool call arrives as `tool_calls` (also when `tool_choice` seeds
+  its opening), and `<think>` reasoning as `reasoning_content`. With
   `logprobs: true` each chunk carries the sampled token's log-probability
   and its top five rivals at temperature 1, so a client can draw the
   model's certainty and its roads not taken from the API alone. The viz
