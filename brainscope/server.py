@@ -944,6 +944,9 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         n = int(ids.shape[1])
         span = _user_span(tok, messages, render, n)
         start, end = span if span else (min(1, n - 1), n)
+        # the text of each read position, so the page can colour the message
+        # itself word by word, not only draw a line over it
+        words = [tok.decode([int(t)]) for t in ids[0, start:end].tolist()]
         snap, tripped = {}, False
         for spec in state["vprobes"]:
             ss = state["vprobe_prompt"].get(spec["name"])
@@ -954,8 +957,10 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
             ss = ss[max(0, start - off):max(0, end - off)]
             if not ss:
                 continue
+            first = max(start, off)
             entry = {"s": [round(x, 4) for x in ss], "start": start, "end": end, "n": n,
-                     "span": "user" if span else "prompt"}
+                     "span": "user" if span else "prompt",
+                     "tokens": words[first - start:first - start + len(ss)]}
             fired_at = None
             if spec.get("ema"):
                 e, es = ss[0], []

@@ -243,6 +243,10 @@
   .probeval { font:700 12px var(--mono); color:var(--live); min-width:62px; text-align:right; }
   .probe.fired .probeval { color:#e5636b; }
   .probecv { flex:1; height:28px; min-width:140px; }
+  .probewords { display:none; margin:6px 74px 2px 132px; font:13px/1.9 var(--mono); color:var(--muted);
+    white-space:pre-wrap; word-break:break-word; }
+  .probewords span { border-radius:3px; }
+  .probewords span.hot { color:#fff; }
 </style>
 
 <header>
@@ -1077,9 +1081,12 @@ function ensureProbeRow(name) {
   const cv = document.createElement("canvas"); cv.className = "probecv";
   const val = document.createElement("span"); val.className = "probeval"; val.textContent = "—";
   row.append(lab, cv, val);
-  probeStrip.appendChild(row);
+  // the user's message under the line, each token coloured by the level the
+  // probe had reached there: plain below the threshold, red above it
+  const words = document.createElement("div"); words.className = "probewords";
+  probeStrip.append(row, words);
   probeStrip.style.display = "block";
-  return (probeRows[name] = {row, cv, val});
+  return (probeRows[name] = {row, cv, val, words});
 }
 
 function drawProbe(name) {
@@ -1143,8 +1150,28 @@ function onProbePromptMsg(msg) {
     r.val.title = "prompt · raw " + last.s.toFixed(2) + (last.e != null ? " · ema " + last.e.toFixed(2) : "")
       + (e.fired_at != null ? ` · fired at token ${e.fired_at + 1} of ${pts.length} of the ${e.span === "user" ? "user's message" : "prompt"}` : "");
     r.row.classList.toggle("fired", e.fired_at != null);
+    drawProbeWords(r.words, e, cfg);
     drawProbe(name);
   }
+}
+
+function drawProbeWords(el, e, cfg) {
+  el.textContent = "";
+  if (!e.tokens || !e.tokens.length) { el.style.display = "none"; return; }
+  const lv = e.s.map((s, i) => e.e ? e.e[i] : s);
+  const thr = cfg && cfg.threshold != null ? cfg.threshold : 0;
+  const top = Math.max(thr + 1e-6, ...lv);
+  e.tokens.forEach((tk, i) => {
+    const sp = document.createElement("span");
+    sp.textContent = tk;
+    sp.title = `token ${i + 1} · level ${lv[i].toFixed(2)}` + (e.e ? ` · raw ${e.s[i].toFixed(2)}` : "");
+    if (lv[i] >= thr) {
+      const a = 0.35 + 0.6 * (lv[i] - thr) / (top - thr);
+      sp.className = "hot"; sp.style.background = `rgba(229,72,77,${a.toFixed(2)})`;
+    }
+    el.appendChild(sp);
+  });
+  el.style.display = "block";
 }
 
 function onProbeMsg(msg) {
@@ -1182,7 +1209,7 @@ function connect() {
     if (msg.type === "start") {
       cols = []; tokens = []; allTokens = []; lensHist = []; textEl.textContent = "";
       probeHist = {}; probePrompt = {};
-      for (const r of Object.values(probeRows)) { r.val.textContent = "—"; r.row.classList.remove("fired"); drawProbe(r.row.querySelector("b").textContent); }
+      for (const r of Object.values(probeRows)) { r.val.textContent = "—"; r.row.classList.remove("fired"); r.words.textContent = ""; r.words.style.display = "none"; drawProbe(r.row.querySelector("b").textContent); }
       lastAttn = null; lensGrid._stale = true; jlensGrid._stale = true;
       generating = true;
       dot.classList.add("live");

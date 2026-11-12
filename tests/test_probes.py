@@ -139,6 +139,8 @@ def test_prompt_reading_is_the_users_message_not_the_template(client):
     assert 0 < pp["start"] < pp["end"] <= pp["n"]
     assert pp["end"] - pp["start"] == len(tok(text, add_special_tokens=False).input_ids) == len(pp["s"])
     assert pp["fired_at"] is None   # threshold out of reach
+    # one text per read position, so the page can colour the message itself
+    assert len(pp["tokens"]) == len(pp["s"]) and "".join(pp["tokens"]) == text
 
 
 def test_prompt_reading_without_a_user_message_skips_the_sink(client):
