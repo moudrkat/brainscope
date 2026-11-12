@@ -6,7 +6,13 @@
   server-sent events, one chunk per token, OpenAI-shaped. The streamed
   pieces add up to the non-streamed reply: the end-of-turn marker is not
   text, a tool call arrives as `tool_calls` (also when `tool_choice` seeds
-  its opening), and `<think>` reasoning as `reasoning_content`. With
+  its opening), and `<think>` reasoning as `reasoning_content`.
+- A streaming client that hangs up (an app's stop button) now stops its own
+  generation; before, the abandoned answer ran to `max_tokens` while the next
+  request waited behind it. A request still queued is never stopped by
+  someone else's hang-up.
+- Replies carry `usage` (prompt, completion and total tokens); streamed, as a
+  last chunk when the request asks with `stream_options.include_usage`. With
   `logprobs: true` each chunk carries the sampled token's log-probability
   and its top five rivals at temperature 1, so a client can draw the
   model's certainty and its roads not taken from the API alone. The viz

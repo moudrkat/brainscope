@@ -17,12 +17,13 @@ def stream(client, **body):
         lines = [l for l in r.iter_lines() if l.startswith("data: ")]
     assert lines[-1] == "data: [DONE]"
     chunks = [json.loads(l[6:]) for l in lines[:-1]]
-    deltas = [c["choices"][0]["delta"] for c in chunks]
+    with_choice = [c for c in chunks if c["choices"]]   # the usage chunk has none
+    deltas = [c["choices"][0]["delta"] for c in with_choice]
     return {
         "content": "".join(d.get("content") or "" for d in deltas),
         "reasoning": "".join(d.get("reasoning_content") or "" for d in deltas),
         "tool_calls": [tc for d in deltas for tc in d.get("tool_calls") or []],
-        "finish": chunks[-1]["choices"][0]["finish_reason"],
+        "finish": with_choice[-1]["choices"][0]["finish_reason"],
         "chunks": chunks,
     }
 
@@ -105,15 +106,15 @@ def test_text_answer_with_tools_offered_still_streams(client, scripted):
     s = stream(client, tools=TOOLS)
     assert s["content"] == "It is sunny."
     assert s["tool_calls"] == [] and s["finish"] == "stop"
-    assert sum(1 for c in s["chunks"] if c["choices"][0]["delta"].get("content")) > 1   # really streamed
+    assert sum(1 for c in s["chunks"] if c["choices"] and c["choices"][0]["delta"].get("content")) > 1   # really streamed
 
 
 def test_logprobs_follow_the_text(client, scripted):
     scripted(["A", " B", "<|im_end|>"])
     s = stream(client, logprobs=True, top_logprobs=2)
-    toks = [lp["token"] for c in s["chunks"] for lp in (c["choices"][0].get("logprobs") or {}).get("content", [])]
+    toks = [lp["token"] for c in s["chunks"] if c["choices"] for lp in (c["choices"][0].get("logprobs") or {}).get("content", [])]
     assert toks == ["A", " B"]                       # none for the end-of-turn marker
-    tops = [len(lp["top_logprobs"]) for c in s["chunks"] for lp in (c["choices"][0].get("logprobs") or {}).get("content", [])]
+    tops = [len(lp["top_logprobs"]) for c in s["chunks"] if c["choices"] for lp in (c["choices"][0].get("logprobs") or {}).get("content", [])]
     assert set(tops) == {2}
 
 
@@ -122,3 +123,28 @@ def test_tiny_model_stream_matches_plain(client):
     s = stream(client, messages=[{"role": "user", "content": "Hello there"}], max_tokens=12)
     assert s["content"] == plain
     assert "<|im_end|>" not in s["content"]
+
+
+def test_usage_on_request_and_in_plain_replies(client):
+    s = stream(client, messages=[{"role": "user", "content": "Hello"}], max_tokens=5,
+               stream_options={"include_usage": True})
+    last = s["chunks"][-1]
+    assert last["choices"] == [] and last["usage"]["completion_tokens"] > 0
+    assert last["usage"]["total_tokens"] == last["usage"]["prompt_tokens"] + last["usage"]["completion_tokens"]
+    plain = chat(client, "Hello", max_tokens=5)
+    assert plain["usage"]["prompt_tokens"] > 0 and plain["usage"]["completion_tokens"] > 0
+    assert "usage" not in stream(client, max_tokens=3)["chunks"][-1]   # not asked, not sent
+
+
+def test_a_client_that_leaves_stops_its_own_generation(client):
+    # read two chunks and hang up, the way an app's stop button does
+    with client.stream("POST", "/v1/chat/completions", json={
+            "stream": True, "max_tokens": 400, "messages": [{"role": "user", "content": "Tell a long story."}]}) as r:
+        for i, _ in enumerate(r.iter_lines()):
+            if i > 3:
+                break
+    deadline = __import__("time").time() + 20
+    while bs.state.get("gen") and not bs.state["gen"].get("done") and __import__("time").time() < deadline:
+        __import__("time").sleep(0.05)
+    assert bs.state["gen"]["done"]
+    assert len(bs.state.get("last_generated", [])) < 400   # stopped, not run to the end

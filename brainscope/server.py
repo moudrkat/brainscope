@@ -811,6 +811,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         _tool_scan(scan, forced_prefix)
     state["steer_mute"] = not scan["speak"]
     ids = tok(prompt, return_tensors="pt").input_ids.to(state["device"])
+    prompt_tokens = int(ids.shape[1])
     past, generated = None, []
 
     n_prompt = ids.shape[1]
@@ -1032,7 +1033,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
         except Exception as e:   # persistence must never break generation
             print(f"brainscope: trace save failed — {e}", flush=True)
     notify({"type": "done", "gen_id": gen["id"], "completion_tokens": len(generated),
-            "trace_id": trace_id})
+            "prompt_tokens": prompt_tokens, "trace_id": trace_id})
     return text
 
 
@@ -1072,8 +1073,12 @@ def to_openai_response(text: str, model: str, raw: bool = False) -> dict:
 async def chat_completions(body: dict):
     loop = asyncio.get_running_loop()
 
+    done: dict = {}
+
     def notify(payload):
         asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+        if payload.get("type") == "done":
+            done.update(payload)
 
     # Per-request steering: {"steering": {"name", "strength", "layer_from",
     # "layer_to"}} in the body (OpenAI SDKs pass it via extra_body). Scoped to
@@ -1117,7 +1122,10 @@ async def chat_completions(body: dict):
         int(body.get("max_tokens") or 1024), float(body.get("temperature") or 0),
         notify, steering, tags, body.get("tool_choice"), body.get("hierarchy"),
         bool(body.get("continue")))
-    return JSONResponse(to_openai_response(text, state["model_name"], bool(body.get("raw"))))
+    resp = to_openai_response(text, state["model_name"], bool(body.get("raw")))
+    if done:
+        resp["usage"] = _usage(done)
+    return JSONResponse(resp)
 
 
 # Markers a streamed answer must not show half-written: the reasoning block and the tool-call
@@ -1168,6 +1176,11 @@ def _stream_view(raw: str, specials: set, forced: bool, tools: bool) -> tuple[st
     return reasoning, answer.rstrip(), tool
 
 
+def _usage(done: dict) -> dict:
+    p, c = int(done.get("prompt_tokens") or 0), int(done.get("completion_tokens") or 0)
+    return {"prompt_tokens": p, "completion_tokens": c, "total_tokens": p + c}
+
+
 def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
     """`stream: true`: the same generation, handed out as OpenAI-style
     server-sent events, one chunk per token. With `logprobs: true` each chunk
@@ -1187,8 +1200,19 @@ def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
     tok = state["tokenizer"]
     specials = set(getattr(tok, "all_special_tokens", []) or [])
 
+    want_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+    # The client can go away mid-answer (the user pressed stop). Generation is one at a time, so an
+    # abandoned answer would otherwise run to max_tokens while the next request waits behind it.
+    # The flag is this request's own: it stops this generation (or keeps it from running at all if it
+    # is still queued), never another request's.
+    gone = {"flag": False, "started": False}
+
     def notify(payload):
         asyncio.run_coroutine_threadsafe(broadcast(payload), loop)
+        if payload.get("type") == "token":
+            gone["started"] = True
+        if gone["flag"] and payload.get("type") == "token":
+            state["stop"] = True   # read by the decode loop before the next token
         if payload.get("type") in ("token", "done"):
             loop.call_soon_threadsafe(queue.put_nowait, payload)
 
@@ -1212,10 +1236,12 @@ def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
         yield chunk({"role": "assistant", "content": ""})
         raw, sent_r, sent_a = "", 0, 0   # all text so far; how much reasoning / answer went out
         lps, held = [], None             # logprobs waiting for the answer text they belong to
+        done: dict = {}
         try:
             while True:
                 payload = await queue.get()
                 if payload["type"] == "done":
+                    done = payload
                     break
                 if want_lp and payload.get("lp"):
                     lp = {"token": payload["text"], "logprob": payload["lp"]["logprob"],
@@ -1251,6 +1277,16 @@ def _stream_chat(body: dict, loop, steering, tags) -> StreamingResponse:
             else:
                 finish = "length" if len(state.get("last_generated", [])) >= int(body.get("max_tokens") or 1024) else "stop"
             yield chunk({}, finish=finish)
+            if want_usage:   # OpenAI's shape: one more chunk, no choices, the counts
+                yield "data: " + json.dumps({"id": cid, "object": "chat.completion.chunk", "created": created,
+                                             "model": model, "choices": [], "usage": _usage(done)}) + "\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            gone["flag"] = True
+            # only once this request's own generation is running: while it is still queued,
+            # state["gen"] is somebody else's, and the flag stops ours on its first token instead
+            if gone["started"] and not task.done():
+                state["stop"] = True
+            raise
         except Exception as e:   # the client sees why, instead of a silent close
             yield "data: " + json.dumps({"error": str(e)}) + "\n\n"
         yield "data: [DONE]\n\n"
