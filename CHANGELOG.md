@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Probes read the prompt: every token of the user's last message is scored
+  while the model reads it, and the verdict (per-token scores, the smoothed
+  level, the token where it first crossed the threshold) goes out before the
+  first answer token. The answer's smoothed level continues from it, the
+  strip draws message and answer on one axis, a firing probe trips the
+  instruments before the answer starts, and the reading is kept in `GET /gen`
+  and in traces (`probe_prompt`). The template around the message and the
+  start-of-turn token (an attention sink, about −36 on a probe that reads ~0
+  elsewhere) are not read.
+
 - `stream: true` on `/v1/chat/completions`: the same generation as
   server-sent events, one chunk per token, OpenAI-shaped. The streamed
   pieces add up to the non-streamed reply: the end-of-turn marker is not

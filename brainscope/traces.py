@@ -90,6 +90,8 @@ class TraceStore:
                  # cheap probe series: [{"i": step, "scores": {...}, "fired": [...]}]
                  # — indexed by all_tokens step, present even for dark-mode runs
                  "probe": gen.get("probe", []),
+                 # the probes' reading of the prompt (the user's message), before token 0
+                 "probe_prompt": gen.get("probe_prompt"),
                  "think": think_span(all_tokens),
                  "replay": gen.get("replay"),
                  "has_hidden": bool(hidden)}

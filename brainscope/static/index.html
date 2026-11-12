@@ -1058,6 +1058,7 @@ const probeStrip = document.getElementById("probestrip");
 const probeRows = {};   // name -> {row, cv, val}
 let probeCfg = {};      // name -> spec from GET /probes (threshold, layer, …)
 let probeHist = {};     // name -> [{s, fired?}] for the current generation
+let probePrompt = {};   // name -> [{s, e?, fired?}] the probe's reading of the PROMPT, sent before token 0
 
 function ensureProbeRow(name) {
   if (probeRows[name]) return probeRows[name];
@@ -1082,7 +1083,10 @@ function ensureProbeRow(name) {
 }
 
 function drawProbe(name) {
-  const {cv} = probeRows[name], hist = probeHist[name] || [];
+  const {cv} = probeRows[name], prompt = probePrompt[name] || [], answer = probeHist[name] || [];
+  // one x-axis for the whole exchange: the prompt's positions (blue) first,
+  // then the answer's tokens (amber), a dashed divider where decoding began
+  const hist = prompt.map(p => ({...p, prompt: true})).concat(answer);
   const W = cv.width = cv.clientWidth, H = cv.height = cv.clientHeight;
   const ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, W, H);
@@ -1098,23 +1102,49 @@ function drawProbe(name) {
     ctx.beginPath(); ctx.moveTo(0, y(thr)); ctx.lineTo(W, y(thr)); ctx.stroke();
     ctx.setLineDash([]);
   }
+  if (prompt.length && answer.length) {
+    ctx.strokeStyle = "rgba(200,200,210,.45)"; ctx.setLineDash([2, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x(prompt.length - 0.5), 0); ctx.lineTo(x(prompt.length - 0.5), H); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  const rawCol = p => p.prompt ? "rgba(127,178,229,.35)" : "rgba(232,180,90,.3)";
+  const emaCol = p => p.prompt ? "#7fb2e5" : "#e8b45a";
   // raw per-token trace faint, EMA on top — per-token h·v̂ is noisy, the
   // level is the signal
-  ctx.strokeStyle = "rgba(232,180,90,.3)"; ctx.lineWidth = 1;
-  ctx.beginPath();
-  hist.forEach((p, i) => i ? ctx.lineTo(x(i), y(p.s)) : ctx.moveTo(x(0), y(p.s)));
-  ctx.stroke();
-  let ema = hist[0].s;
-  ctx.strokeStyle = "#e8b45a"; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(x(0), y(ema));
-  hist.forEach((p, i) => { ema = ema * 0.85 + p.s * 0.15; if (i) ctx.lineTo(x(i), y(ema)); });
-  ctx.stroke();
+  ctx.lineWidth = 1;
+  hist.forEach((p, i) => {
+    if (!i) return;
+    ctx.strokeStyle = rawCol(p); ctx.beginPath(); ctx.moveTo(x(i - 1), y(hist[i - 1].s)); ctx.lineTo(x(i), y(p.s)); ctx.stroke();
+  });
+  let ema = hist[0].s, prev = ema;
+  ctx.lineWidth = 2;
+  hist.forEach((p, i) => {
+    ema = ema * 0.85 + p.s * 0.15;
+    if (i) { ctx.strokeStyle = emaCol(p); ctx.beginPath(); ctx.moveTo(x(i - 1), y(prev)); ctx.lineTo(x(i), y(ema)); ctx.stroke(); }
+    prev = ema;
+  });
   ctx.fillStyle = "#e5636b";
   hist.forEach((p, i) => {
     // dots sit on the SMOOTHED level when the probe fires on EMA — firing is
     // decided there, so a dot below the threshold line would be a lie
     if (p.fired) { ctx.beginPath(); ctx.arc(x(i), y(p.e ?? p.s), 2.5, 0, 7); ctx.fill(); }
   });
+}
+
+// the probe's reading of the prompt arrives once, before token 0: the
+// verdict on the input, with the position where it first crossed the line
+function onProbePromptMsg(msg) {
+  for (const [name, e] of Object.entries(msg.probe_prompt)) {
+    const pts = e.s.map((s, i) => ({s, e: e.e ? e.e[i] : undefined, fired: e.fired_at != null && i >= e.fired_at}));
+    probePrompt[name] = pts;
+    const r = ensureProbeRow(name), cfg = probeCfg[name];
+    const last = pts[pts.length - 1], level = last.e ?? last.s;
+    r.val.textContent = (cfg && cfg.scale) ? Math.round(100 * level / cfg.scale) + "%" : level.toFixed(2);
+    r.val.title = "prompt · raw " + last.s.toFixed(2) + (last.e != null ? " · ema " + last.e.toFixed(2) : "")
+      + (e.fired_at != null ? ` · fired at token ${e.fired_at + 1} of ${pts.length} of the ${e.span === "user" ? "user's message" : "prompt"}` : "");
+    r.row.classList.toggle("fired", e.fired_at != null);
+    drawProbe(name);
+  }
 }
 
 function onProbeMsg(msg) {
@@ -1151,7 +1181,7 @@ function connect() {
     const msg = JSON.parse(ev.data);
     if (msg.type === "start") {
       cols = []; tokens = []; allTokens = []; lensHist = []; textEl.textContent = "";
-      probeHist = {};
+      probeHist = {}; probePrompt = {};
       for (const r of Object.values(probeRows)) { r.val.textContent = "—"; r.row.classList.remove("fired"); drawProbe(r.row.querySelector("b").textContent); }
       lastAttn = null; lensGrid._stale = true; jlensGrid._stale = true;
       generating = true;
@@ -1163,6 +1193,8 @@ function connect() {
       lastHier = msg;
       document.getElementById("tab-hier").style.display = "";
       drawHier();
+    } else if (msg.type === "probe_prompt") {
+      onProbePromptMsg(msg);   // the prompt's reading, once, before token 0
     } else if (msg.type === "token") {
       const kIdx = allTokens.length;
       allTokens.push(msg.text);

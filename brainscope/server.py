@@ -614,11 +614,26 @@ def _install_vprobe_hooks() -> None:
 
     def make(specs):
         def hook(_module, _inp, out):
-            # prefill chunks would score prompt positions, not the answer —
-            # probes follow the capture convention: decode steps only
-            if state.get("in_prefill") or not state["vprobes_on"]:
+            if not state["vprobes_on"]:
                 return
             t = out[0] if isinstance(out, tuple) else out
+            if state.get("in_prefill"):
+                # the prompt is scored too, every position of every prefill
+                # chunk — that is what an input monitor is (Gemini's probes
+                # read only the prompt; Anthropic's read prompt and answer):
+                # the verdict can stand before the first token is decoded.
+                # Kept apart from the decode scores (vprobe_prompt), so the
+                # answer series and the traces keep their decode-only meaning.
+                hp = t[0].float()
+                for spec in specs:
+                    row = _dir_row(spec["direction"], spec["layer"]).float()
+                    if spec["metric"] == "cos":
+                        s = torch.nn.functional.cosine_similarity(hp, row[None], dim=1)
+                    else:
+                        s = hp @ (row / (row.norm() + 1e-8))
+                    state.setdefault("vprobe_prompt", {}).setdefault(spec["name"], []).extend(
+                        float(x) for x in s.tolist())
+                return
             h = t[0, -1].float()
             for spec in specs:
                 row = _dir_row(spec["direction"], spec["layer"]).float()
@@ -765,16 +780,44 @@ def _tool_scan(st: dict, text: str) -> None:
         and st["args_depth"] is not None and len(st["stack"]) > st["args_depth"])
 
 
+def _user_span(tok, messages, render, n_ids: int) -> tuple[int, int] | None:
+    """Token positions [start, end) of the last user message inside the rendered prompt, or None.
+    The prompt probe reads this span: the template around it is not what the user wrote, and the
+    first position (the start-of-turn token) is an attention sink whose residual is huge — on
+    Qwen2.5-Coder-1.5B a probe reads about -36 there against ~0 everywhere else, enough to drag
+    a smoothed level for the first couple of dozen tokens."""
+    idx = next((i for i in range(len(messages) - 1, -1, -1)
+                if messages[i].get("role") == "user" and isinstance(messages[i].get("content"), str)), None)
+    if idx is None or not messages[idx]["content"]:
+        return None
+    marked = [dict(m) for m in messages]
+    marked[idx]["content"] = "\x00"
+    try:
+        prefix = render(marked).split("\x00")[0]
+        full = render(messages)
+    except Exception:
+        return None
+    if not full.startswith(prefix):
+        return None
+    bos = len(tok(full).input_ids) - len(tok(full, add_special_tokens=False).input_ids)
+    start = bos + len(tok(prefix, add_special_tokens=False).input_ids)
+    end = min(n_ids, start + len(tok(messages[idx]["content"], add_special_tokens=False).input_ids))
+    return (start, end) if 0 < start < end else None
+
+
 def _generate(messages, tools, max_new_tokens, temperature, notify,
               active_steer=None, tags=None, tool_choice=None, hierarchy=None,
               continue_final=False):
     tok, model = state["tokenizer"], state["model"]
     kwargs = {"tools": tools} if tools else {}
     if continue_final and messages and messages[-1].get("role") == "assistant":
-        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=False,
-                                         continue_final_message=True, **kwargs)
+        def render(ms):
+            return tok.apply_chat_template(ms, tokenize=False, add_generation_prompt=False,
+                                           continue_final_message=True, **kwargs)
     else:
-        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, **kwargs)
+        def render(ms):
+            return tok.apply_chat_template(ms, tokenize=False, add_generation_prompt=True, **kwargs)
+    prompt = render(messages)
     replay_ctx = {"messages": messages, "tools": tools, "tool_choice": tool_choice}
 
     # tool_choice enforcement without guided decoding: seed the generation with
@@ -849,6 +892,7 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
     # show real per-head self-attention matrices (cheap when seq is small).
     out = None
     state["in_prefill"] = True   # decode-only specs skip the prompt forward
+    state["vprobe_prompt"] = {}  # the cheap probes score the prompt into here
     if state["viz"] and ids.shape[1] <= ATTN_MATRIX_MAX:
         out = model(input_ids=ids, past_key_values=past, use_cache=True,
                     output_attentions=True, **logits_kw)
@@ -860,6 +904,56 @@ def _generate(messages, tools, max_new_tokens, temperature, notify,
                         use_cache=True, **logits_kw)
             past = out.past_key_values
     state["in_prefill"] = False
+
+    # The probes' reading of the prompt goes out NOW, before any token is
+    # decoded: per-position scores over the user's last message, the smoothed
+    # level (same EMA as the answer gets), and the token of that message where
+    # it first crossed the threshold. Without a user message (a raw prompt)
+    # it reads everything after position 0, the attention sink. The answer's
+    # EMA then continues from the prompt's last level instead of restarting:
+    # one monitor over the whole exchange.
+    if state["vprobes"] and state["vprobes_on"] and state.get("vprobe_prompt"):
+        n = int(ids.shape[1])
+        span = _user_span(tok, messages, render, n)
+        start, end = span if span else (min(1, n - 1), n)
+        snap, tripped = {}, False
+        for spec in state["vprobes"]:
+            ss = state["vprobe_prompt"].get(spec["name"])
+            if not ss:
+                continue
+            ss = ss[-n:]
+            off = n - len(ss)   # fewer scores than positions: they belong to the end of the prompt
+            ss = ss[max(0, start - off):max(0, end - off)]
+            if not ss:
+                continue
+            entry = {"s": [round(x, 4) for x in ss], "start": start, "end": end, "n": n,
+                     "span": "user" if span else "prompt"}
+            fired_at = None
+            if spec.get("ema"):
+                e, es = ss[0], []
+                for x in ss:
+                    e = e * (1 - spec["ema"]) + x * spec["ema"]
+                    es.append(e)
+                entry["e"] = [round(x, 4) for x in es]
+                probe_ema[spec["name"]] = e
+                levels = es
+            else:
+                levels = ss
+            if spec["threshold"] is not None:
+                fired_at = next((i for i, g in enumerate(levels) if g >= spec["threshold"]), None)
+            entry["fired_at"] = fired_at
+            if fired_at is not None and spec.get("trip") == "viz":
+                tripped = True
+            snap[spec["name"]] = entry
+        if snap:
+            gen["probe_prompt"] = snap
+            msg = {"type": "probe_prompt", "probe_prompt": snap}
+            # trip: as for the answer, a probe firing on the prompt turns the full capture on —
+            # here before the first decoded token, so the whole answer is captured
+            if tripped and not state["viz"]:
+                state["viz"] = True
+                msg["probe_trip"] = True
+            notify(msg)
 
     # Instruction hierarchy (V-Steer). Runs on the finished prompt cache, before
     # a single token is decoded: heads that took their cue from a demoted span
@@ -1862,7 +1956,7 @@ async def gen_meta():
     if not g:
         return JSONResponse({"error": "no generation yet"}, status_code=404)
     keys = ("id", "n_prompt", "prompt_offset", "prompt_tokens", "tokens",
-            "all_tokens", "norms", "lens", "jlens", "probe", "steer", "tags", "done")
+            "all_tokens", "norms", "lens", "jlens", "probe", "probe_prompt", "steer", "tags", "done")
     return {k: g.get(k) for k in keys}
 
 

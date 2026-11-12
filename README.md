@@ -77,7 +77,8 @@ What it does:
   on activations screens everything, expensive checks run only on hits:
   per-token scalar readouts against your directions that stay alive with
   the visualization off and can flip the full instruments on the moment
-  they fire. Train your own with one request, with holdout AUC so you know
+  they fire. They read the prompt too: a verdict on the user's message
+  before the first answer token. Train your own with one request, with holdout AUC so you know
   whether the meter measures signal or noise
   ([details ↓](#probes-and-the-slop-o-meter)).
 - **Watch words surface before they're written** — a
@@ -116,7 +117,7 @@ brainscope --model tiny --lens on    # 0.5B, runs on CPU - good first try
 ```
 
 No app handy? The viz page has a built-in chat box - type and watch. Or run
-the whole instrument on a 135M-parameter model at microcontroller pace:
+the whole instrument on a 28.9M-parameter model at microcontroller pace:
 [examples/esp32](examples/esp32/README.md).
 
 Or skip Python entirely and run the Docker image:
@@ -305,6 +306,28 @@ with the visualisation off, so it can screen real traffic rather than a
 benchmark. Give it a `threshold` and `"trip": "viz"` and the full instruments
 switch themselves on the moment it fires — screen everything cheaply, look
 closely only at the hits.
+
+**It reads the prompt too.** While the model reads the prompt, the probe
+scores every token of the user's last message and reports before the first
+answer token is written: an input monitor, not only an output one. The strip
+shows the message in blue and the answer in amber, and the answer's smoothed
+level carries on from where the message ended. A probe that fires on the
+message trips the instruments before the answer starts, so the whole answer
+is captured. The reading is kept in `GET /gen` and in the trace as
+`probe_prompt`.
+
+![The probe strip: the user's message in blue, red where the probe crossed its line, then the answer in amber](docs/img/probe-reads-the-prompt.png)
+
+*Qwen2.5-Coder-1.5B, an intent probe on layer 13 (a linear probe trained to
+tell attack requests from coding requests, for a talk; not in this repo). The
+request asks for a todo app and, in one sentence, to quietly send a copy of
+everything the user types to the requester's own server. The probe crosses its
+line at " everything", right after "quietly send a copy of": token 43 of the
+67 in the message, before the model has written a word.*
+
+`layer` is brainscope's decoder-layer index, so a probe fitted on transformers'
+`hidden_states[k]` goes on layer `k − 1`. The `proj` metric reads the probe's
+unit direction without its bias, so move the threshold to match.
 
 `POST /probes/train` builds one from two contrast personas without any external
 tooling: the server generates the answers, extracts the diff-of-means direction

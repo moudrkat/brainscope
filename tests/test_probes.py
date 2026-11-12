@@ -62,9 +62,13 @@ def test_probe_ema_smoothed_series(client):
     assert g["probe"], "series recorded"
     # every recorded step carries both the raw score and the smoothed level
     assert all("ema" in e and "d" in e["ema"] for e in g["probe"])
-    # EMA equals raw on the first step, then lags it
+    # the answer's EMA continues from the PROMPT's last smoothed level (one
+    # monitor over the whole exchange), so on the first step it lags the raw
+    # score toward that level instead of equalling it
     first = g["probe"][0]
-    assert first["ema"]["d"] == first["scores"]["d"]
+    prompt_level = g["probe_prompt"]["d"]["e"][-1]
+    expect = prompt_level * (1 - 0.2) + first["scores"]["d"] * 0.2
+    assert abs(first["ema"]["d"] - expect) < 1e-3
     assert first["fired"] == ["d"]   # threshold -1e9 fires on the smoothed level too
 
 
@@ -103,3 +107,61 @@ def test_probe_default_layer_from_meta(client):
     bs.state["dir_meta"]["m"] = {"layer_from": 1, "layer_to": 3}
     r = client.post("/probes", json={"probes": [{"direction": "m"}]})
     assert r.json()["probes"][0]["layer"] == 1
+
+
+def test_probe_reads_the_prompt_before_token_zero(client):
+    """An input monitor: the prompt's positions are scored during prefill and
+    reported before any token is decoded, with the position where the
+    smoothed level first crossed the threshold."""
+    _arm(client, ema=0.5, threshold=-1e9)   # threshold so low that the first position fires
+    chat(client, text="Write a loop that counts to ten.", max_tokens=4)
+    g = bs.state["gen"]
+    pp = g.get("probe_prompt")
+    assert pp and "d" in pp, "the prompt reading is kept with the generation"
+    n = len(pp["d"]["s"])
+    assert n >= 8, f"one score per prompt position, got {n}"
+    assert len(pp["d"]["e"]) == n
+    assert pp["d"]["fired_at"] == 0
+    # decode-only series is untouched by the prompt positions
+    assert g["probe"] and g["probe"][0]["i"] >= 1
+    assert len(g["probe"]) < n
+
+
+def test_prompt_reading_is_the_users_message_not_the_template(client):
+    """The span is the last user message: the template around it and the start-of-turn
+    sink at position 0 are not read, and the positions say where in the prompt it sits."""
+    _arm(client, ema=0.5, threshold=1e9)
+    text = "Write a loop that counts to ten."
+    chat(client, text=text, max_tokens=2)
+    pp = bs.state["gen"]["probe_prompt"]["d"]
+    tok = bs.state["tokenizer"]
+    assert pp["span"] == "user"
+    assert 0 < pp["start"] < pp["end"] <= pp["n"]
+    assert pp["end"] - pp["start"] == len(tok(text, add_special_tokens=False).input_ids) == len(pp["s"])
+    assert pp["fired_at"] is None   # threshold out of reach
+
+
+def test_prompt_reading_without_a_user_message_skips_the_sink(client):
+    _arm(client, threshold=1e9)
+    r = client.post("/v1/chat/completions", json={
+        "max_tokens": 2, "messages": [{"role": "system", "content": "You count things."}]})
+    assert r.status_code == 200
+    pp = bs.state["gen"]["probe_prompt"]["d"]
+    assert pp["span"] == "prompt" and pp["start"] == 1 and len(pp["s"]) == pp["n"] - 1
+
+
+def test_prompt_reading_is_kept_in_the_trace_and_in_gen(client):
+    _arm(client, ema=0.5, threshold=-1e9)
+    chat(client, text="Count to ten.", max_tokens=2)
+    g = client.get("/gen").json()
+    assert g["probe_prompt"]["d"]["fired_at"] == 0
+    tid = bs.state["traces"].list()[0]["id"]
+    assert bs.state["traces"].load(tid)["probe_prompt"]["d"]["s"] == g["probe_prompt"]["d"]["s"]
+
+
+def test_prompt_firing_trips_the_instruments_before_the_answer(client):
+    bs.state["viz"] = False
+    _arm(client, threshold=-1e9, trip="viz")
+    chat(client, text="Count to ten.", max_tokens=3)
+    assert bs.state["viz"] is True
+    assert bs.state["gen"]["probe_prompt"]["d"]["fired_at"] == 0
