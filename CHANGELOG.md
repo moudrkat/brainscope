@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- hotwire's `"mode": "project"` (0.1.4): `h -= scale·(h·â)â` on the layer's
+  MLP output, the activations hotwire touches in vLLM, so a projection
+  calibrated here behaves the same there. Scale 1 removes the direction,
+  2 reflects it.
 - A probe says what it reads: `reads: "prompt"`, `"answer"` or `"both"` (the
   default, as before). A probe trained on requests reads the prompt only; on
   the model's own answer it is out of distribution.

@@ -33,6 +33,30 @@ def test_normalize_accepts_hotwire_dialect(app_state, direction):
                       "prefill": False, "syntax_mute": True}]
 
 
+def test_project_mode_matches_hotwire(app_state, direction):
+    """hotwire's project mode, h -= scale·(h·â)â on the MLP output, as an ablation swap
+    with keep = 1 − scale, hooked on the same module."""
+    specs = bs._normalize_steer({"id": "vec", "layer": 1, "scale": 6, "mode": "project"})
+    assert specs == [{"name": "vec", "swap_to": "vec", "strength": -5.0, "project": 6.0,
+                      "site": "mlp", "layer_from": 1, "layer_to": 1,
+                      "prefill": True, "syntax_mute": True}]
+    mlp = bs._decoder_layers(bs.state["model"])[1].mlp
+    seen = {}
+    h0 = mlp.register_forward_hook(lambda m, i, o: seen.__setitem__("raw", o.detach().clone()))
+    handles, applied = bs._install_steer_stack(specs)
+    h1 = mlp.register_forward_hook(lambda m, i, o: seen.__setitem__("steered", o.detach().clone()))
+    try:
+        bs.state["model"](torch.tensor([[1, 2, 3, 4]]))
+    finally:
+        for h in handles + [h0, h1]:
+            h.remove()
+    a = torch.nn.functional.normalize(direction.float(), dim=0)
+    raw = seen["raw"].float()
+    want = raw - 6.0 * (raw @ a).unsqueeze(-1) * a
+    torch.testing.assert_close(seen["steered"].float(), want, atol=1e-4, rtol=1e-4)
+    assert applied[0]["name"] == "project:vec(scale=6.0)"
+
+
 def test_normalize_accepts_json_string_and_list(app_state, direction):
     wire = json.dumps([{"id": "vec", "layer": 1, "scale": 2},
                        {"id": "vec", "layer": 3, "scale": 2}])

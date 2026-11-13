@@ -233,7 +233,7 @@ def _dir_row(name: str, i: int) -> torch.Tensor:
 def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: int,
                          swap_to: str | None = None, prefill: bool = True,
                          syntax_mute: bool = True, gate: float | None = None,
-                         answer_only: bool = False) -> list:
+                         answer_only: bool = False, site: str = "layer") -> list:
     """Register steering hooks, return handles.
 
     Default: activation addition (h += strength * direction). With `swap_to`,
@@ -253,7 +253,12 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
     behavior-present vs -absent activations.
 
     A direction is one vector [hidden] applied to every steered layer, or a
-    per-layer matrix [n_layers, hidden] where each steered layer gets its row."""
+    per-layer matrix [n_layers, hidden] where each steered layer gets its row.
+
+    `site="mlp"` hooks the layer's MLP output instead of the layer output: that
+    is where hotwire acts in vLLM (decoder layers return the MLP output and the
+    residual separately), so hotwire's `"mode": "project"` lands on the same
+    activations here."""
 
     def make_hook(row, row_to=None):
         a = torch.nn.functional.normalize(row.float(), dim=0)
@@ -285,7 +290,7 @@ def _install_steer_hooks(name: str, strength: float, layer_from: int, layer_to: 
 
     layers = _decoder_layers(state["model"])
     layer_to = min(layer_to if layer_to >= 0 else len(layers) - 1, len(layers) - 1)
-    return [layers[i].register_forward_hook(
+    return [(layers[i].mlp if site == "mlp" else layers[i]).register_forward_hook(
                 make_hook(_dir_row(name, i),
                           _dir_row(swap_to, i) if swap_to else None))
             for i in range(max(0, layer_from), layer_to + 1)]
@@ -352,6 +357,15 @@ def _normalize_steer(body) -> list:
         else:
             lf = int(s.get("layer_from", 0))
             lt = int(s.get("layer_to", -1))
+        # hotwire's project mode: h -= scale·(h·â)â on the layer's MLP output, the
+        # same activations hotwire touches in vLLM. The ablation swap with
+        # keep = 1 − scale (scale 1 removes, 2 reflects, more pushes back).
+        if s.get("mode") == "project":
+            if name and strength != 0 and name in state["directions"]:
+                out.append({"name": name, "swap_to": name, "strength": 1.0 - strength,
+                            "project": strength, "site": "mlp",
+                            "layer_from": lf, "layer_to": lt, **_steer_regime(s)})
+            continue
         if name and strength != 0 and name in state["directions"]:
             spec = {"name": name, "strength": strength,
                     "layer_from": lf, "layer_to": lt, **_steer_regime(s)}
@@ -374,9 +388,12 @@ def _install_steer_stack(specs: list) -> tuple[list, list]:
                                         prefill=s.get("prefill", True),
                                         syntax_mute=s.get("syntax_mute", True),
                                         gate=s.get("gate"),
-                                        answer_only=s.get("answer_only", False))
+                                        answer_only=s.get("answer_only", False),
+                                        site=s.get("site", "layer"))
         lt = min(s["layer_to"] if s["layer_to"] >= 0 else n - 1, n - 1)
-        if s.get("swap_to") == s["name"]:
+        if "project" in s:
+            name = f"project:{s['name']}(scale={s['project']})"
+        elif s.get("swap_to") == s["name"]:
             name = f"ablate:{s['name']}(keep={s['strength']})"
         elif s.get("swap_to"):
             name = f"{s['name']}→{s['swap_to']}"

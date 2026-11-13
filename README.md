@@ -58,7 +58,9 @@ What it does:
   drive it from a slider, per request, or by a tag-matched policy. Speaks
   [hotwire-vllm](https://github.com/moudrkat/hotwire-vllm)'s steering spec
   (`{"id", "layer", "scale", "decode_only"}`, incl. the `vllm_xargs` wire
-  format) — **calibrate here, deploy there**: `python -m
+  format, and `"mode": "project"`, which pushes against each token's own
+  component along the direction on the layer's MLP output, as hotwire does)
+  — **calibrate here, deploy there**: `python -m
   brainscope.export_hotwire` ships vectors with a regime passport, and
   `POST /replay` A/Bs any conversation under a spec, showing per-layer
   cosine and which words the vector suppressed
