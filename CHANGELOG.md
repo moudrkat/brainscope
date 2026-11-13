@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- A probe says what it reads: `reads: "prompt"`, `"answer"` or `"both"` (the
+  default, as before). A probe trained on requests reads the prompt only; on
+  the model's own answer it is out of distribution.
+- The probe strip prints the user's message under the line, each token
+  coloured by the level the probe had reached there (red above the
+  threshold). The prompt reading carries the token texts (`tokens`).
+
 ## 0.4.4 (2026-11-12)
 
 - Probes read the prompt: every token of the user's last message is scored

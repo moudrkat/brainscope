@@ -607,6 +607,12 @@ def _normalize_vprobes(raw) -> list | str:
         ema = p.get("ema")
         if ema is not None and not 0 < float(ema) <= 1:
             return "ema must be in (0, 1]"
+        # what the probe reads: a probe trained on requests reads the prompt
+        # only — on the model's own answer it is out of distribution and its
+        # alarms there mean nothing; one trained on answers reads the answer
+        reads = p.get("reads", "both")
+        if reads not in ("prompt", "answer", "both"):
+            return "reads must be 'prompt', 'answer' or 'both'"
         scale = p.get("scale")   # calibrated register level (pos-class mean
         # projection) — lets the UI show comparable % instead of raw h·v̂,
         # whose units differ per direction
@@ -615,7 +621,7 @@ def _normalize_vprobes(raw) -> list | str:
                       "threshold": None if thr is None else float(thr),
                       "ema": None if ema is None else float(ema),
                       "scale": None if scale is None else float(scale),
-                      "trip": trip}
+                      "trip": trip, "reads": reads}
         if p.get("vector") is not None:   # kept so the probes file reloads on its own
             spec["vector"] = p["vector"]
         specs.append(spec)
@@ -663,12 +669,16 @@ def _install_vprobe_hooks() -> None:
                 # answer series and the traces keep their decode-only meaning.
                 hp = t[0].float()
                 for spec in specs:
+                    if spec.get("reads") == "answer":
+                        continue
                     s = _probe_score(hp, spec)
                     state.setdefault("vprobe_prompt", {}).setdefault(spec["name"], []).extend(
                         float(x) for x in s.tolist())
                 return
             h = t[0, -1].float()
             for spec in specs:
+                if spec.get("reads") == "prompt":
+                    continue
                 state["vprobe_scores"][spec["name"]] = float(_probe_score(h, spec))
         return hook
 

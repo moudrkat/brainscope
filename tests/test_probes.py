@@ -197,3 +197,18 @@ def test_probe_spec_errors(client):
     assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "hidden_state": 0}]}).status_code == 400
     assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "hidden_state": 2, "layer": 1}]}).status_code == 400
     assert client.post("/probes", json={"probes": [{"name": "x", "vector": v, "metric": "nope"}]}).status_code == 400
+
+
+def test_probe_reads_only_what_it_was_trained_on(client):
+    """reads: 'prompt' scores the user's message and nothing of the answer; 'answer' the reverse."""
+    _arm(client, ema=0.5, threshold=-1e9, reads="prompt")
+    chat(client, text="Count to ten.", max_tokens=6)
+    g = bs.state["gen"]
+    assert g["probe_prompt"]["d"]["fired_at"] == 0
+    assert not g["probe"]   # no answer series, no alarms on the model's own text
+    _arm(client, threshold=-1e9, reads="answer")
+    chat(client, text="Count to ten.", max_tokens=6)
+    g = bs.state["gen"]
+    assert not g.get("probe_prompt") and g["probe"]
+    r = client.post("/probes", json={"probes": [{"direction": "d", "layer": 2, "reads": "nothing"}]})
+    assert r.status_code == 400
